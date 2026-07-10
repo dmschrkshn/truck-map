@@ -11,31 +11,46 @@
     #map { width:100%; height:100%; }
 
     #panel {
-      position:absolute; top:0; left:0; bottom:0; width:280px; z-index:1000;
+      position:absolute; top:0; left:0; bottom:0; width:300px; z-index:1000;
       background:#fff; box-shadow:2px 0 14px rgba(0,0,0,.12);
       display:flex; flex-direction:column; transition:transform .25s ease;
     }
-    #panel.hidden { transform:translateX(-280px); }
-    #panel-head { padding:16px 18px 12px; border-bottom:1px solid #eceff1; }
+    #panel.hidden { transform:translateX(-300px); }
+    #panel-head { padding:15px 16px 11px; border-bottom:1px solid #eceff1; }
     #panel-head h1 { margin:0 0 3px; font-size:16px; font-weight:600; color:#1c2833; }
-    #panel-head span { font-size:12px; color:#90a4ae; }
-    #list { flex:1; overflow-y:auto; padding:6px 0; }
+    #panel-head .sub { font-size:12px; color:#90a4ae; margin-bottom:11px; }
+
+    #search {
+      width:100%; padding:8px 11px; font-size:13px;
+      border:1px solid #cfd8dc; border-radius:7px; outline:none;
+      transition:border-color .15s;
+    }
+    #search:focus { border-color:#2c7fb8; }
+
+    #list { flex:1; overflow-y:auto; padding:5px 0; }
+    #empty { padding:22px 16px; font-size:13px; color:#b0bec5; text-align:center; }
 
     .item {
-      display:flex; align-items:center; gap:11px;
-      padding:11px 18px; cursor:pointer; border-left:3px solid transparent;
+      display:flex; align-items:flex-start; gap:10px;
+      padding:11px 16px; cursor:pointer; border-left:3px solid transparent;
       transition:background .12s;
     }
     .item:hover { background:#f5f7f9; }
     .item.active { background:#eef4f8; border-left-color:#2c7fb8; }
-    .item .ico { width:22px; height:22px; flex:none; display:flex; align-items:center; }
-    .item .txt { min-width:0; }
+    .item .ico { width:24px; flex:none; padding-top:2px; }
+    .item .txt { min-width:0; flex:1; }
     .item .name { font-size:14px; font-weight:600; color:#263238; }
-    .item .ago { font-size:12px; color:#78909c; margin-top:1px; }
-    .item.lost .ago { color:#c0392b; font-weight:600; }
+    .item .meta { font-size:12px; color:#78909c; margin-top:2px; }
+    .item .note {
+      font-size:11px; color:#8d6e63; margin-top:4px;
+      background:#fff8e1; padding:3px 7px; border-radius:4px;
+      display:inline-block; max-width:100%; overflow:hidden;
+      text-overflow:ellipsis; white-space:nowrap;
+    }
+    .item.lost .meta { color:#c0392b; font-weight:600; }
 
     #toggle {
-      position:absolute; top:14px; left:294px; z-index:1001;
+      position:absolute; top:14px; left:314px; z-index:1001;
       width:34px; height:34px; border:0; border-radius:7px; background:#fff;
       box-shadow:0 2px 8px rgba(0,0,0,.16); cursor:pointer;
       font-size:17px; line-height:1; color:#455a64; transition:left .25s ease;
@@ -59,9 +74,9 @@
     }
 
     @media (max-width: 720px) {
-      #panel { width:240px; }
-      #panel.hidden { transform:translateX(-240px); }
-      #toggle { left:254px; }
+      #panel { width:250px; }
+      #panel.hidden { transform:translateX(-250px); }
+      #toggle { left:264px; }
       #legend { bottom:12px; right:10px; font-size:12px; padding:9px 12px; }
       #stamp { display:none; }
     }
@@ -73,7 +88,8 @@
   <div id="panel">
     <div id="panel-head">
       <h1>Автовозы в пути</h1>
-      <span id="count">загрузка…</span>
+      <div class="sub" id="count">загрузка…</div>
+      <input id="search" type="text" placeholder="Поиск по номеру…" autocomplete="off">
     </div>
     <div id="list"></div>
   </div>
@@ -93,7 +109,7 @@
   <script>
     var API = 'https://script.google.com/macros/s/AKfycbwdjusGg4nQmK9jieXklITebNhkSC4Pu8fbqA2NsGxgtjhRk_id0W7MbYForU901Xki/exec';
 
-    var map, cluster;
+    var map, cluster, records = [], marksByTruck = {};
 
     function truckSVG(color, w, h) {
       w = w || 46; h = h || 30;
@@ -118,8 +134,28 @@
         '</g></svg>';
     }
 
-    function svgDataURL(color) {
-      return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(truckSVG(color, 46, 30));
+    function escapeXml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function markerSVG(color, label, hasNote) {
+      var text = escapeXml(label);
+      var w = Math.max(58, text.length * 7.4 + 16);
+      var svgW = Math.max(w, 46);
+      var cx = svgW / 2;
+
+      return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="52" viewBox="0 0 ' + svgW + ' 52">' +
+          '<rect x="' + (cx - w / 2) + '" y="0" width="' + w + '" height="17" rx="4" fill="' + color + '"/>' +
+          '<text x="' + cx + '" y="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" ' +
+            'font-size="11" font-weight="600" fill="#fff" text-anchor="middle">' + text + '</text>' +
+          (hasNote ? '<circle cx="' + (cx + w / 2 - 4) + '" cy="3" r="4.5" fill="#c0392b" stroke="#fff" stroke-width="1.2"/>' : '') +
+          '<g transform="translate(' + (cx - 23) + ',20)">' +
+            truckSVG(color, 46, 30).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '') +
+          '</g>' +
+        '</svg>'
+      );
     }
 
     function ageColor(d) {
@@ -129,24 +165,47 @@
     }
 
     function agoText(d) {
-      if (d === 0) return 'обновлено сегодня';
-      if (d === 1) return 'обновлено вчера';
+      if (d === 0) return 'сегодня';
+      if (d === 1) return 'вчера';
       var last = d % 10, tens = d % 100;
       var w = (last === 1 && tens !== 11) ? 'день'
             : (last >= 2 && last <= 4 && (tens < 12 || tens > 14)) ? 'дня' : 'дней';
       return d + ' ' + w + ' назад';
     }
 
+    function daysWord(d) {
+      var last = d % 10, tens = d % 100;
+      if (last === 1 && tens !== 11) return 'день';
+      if (last >= 2 && last <= 4 && (tens < 12 || tens > 14)) return 'дня';
+      return 'дней';
+    }
+
+    function etaText(eta) {
+      if (eta === 0) return 'прибыл';
+      return '~' + eta + ' ' + daysWord(eta);
+    }
+
+    function kmText(km) {
+      return km.toLocaleString('ru-RU') + ' км';
+    }
+
     ymaps.ready(function () {
       map = new ymaps.Map('map', {
-        center: [55.75, 37.62], zoom: 4,
+        center: [58, 60], zoom: 4,
         controls: ['zoomControl', 'fullscreenControl', 'typeSelector']
       }, { suppressMapOpenBlock: true });
 
       cluster = new ymaps.Clusterer({
         groupByCoordinates: false,
-        gridSize: 64,
-        clusterDisableClickZoom: false
+        gridSize: 80,
+        clusterDisableClickZoom: false,
+        clusterOpenBalloonOnClick: true,
+        clusterBalloonContentLayout: 'cluster#balloonCarousel',
+        clusterBalloonPagerSize: 5,
+        clusterIconLayout: 'default#pieChart',
+        clusterIconPieChartRadius: 22,
+        clusterIconPieChartCoreRadius: 14,
+        clusterIconPieChartStrokeWidth: 2
       });
       map.geoObjects.add(cluster);
 
@@ -159,73 +218,136 @@
       setTimeout(function () { if (map) map.container.fitToViewport(); }, 260);
     };
 
+    document.getElementById('search').oninput = function () {
+      renderList(this.value.trim().toLowerCase());
+    };
+
+    function renderList(filter) {
+      var list = document.getElementById('list');
+      list.innerHTML = '';
+
+      var shown = records.filter(function (p) {
+        return !filter || p.truck.toLowerCase().indexOf(filter) !== -1;
+      });
+
+      if (!shown.length) {
+        list.innerHTML = '<div id="empty">Ничего не найдено</div>';
+        return;
+      }
+
+      shown.forEach(function (p) {
+        var item = document.createElement('div');
+        item.className = 'item' + (p.days >= 5 ? ' lost' : '');
+
+        var noteHtml = p.note
+          ? '<div class="note" title="' + escapeXml(p.note) + '">' + escapeXml(p.note) + '</div>'
+          : '';
+
+        item.innerHTML =
+          '<span class="ico">' + truckSVG(p.color, 24, 16) + '</span>' +
+          '<span class="txt">' +
+            '<div class="name">' + p.truck + '</div>' +
+            '<div class="meta">' + kmText(p.km) + ' · ' + etaText(p.eta) + ' · ' + agoText(p.days) + '</div>' +
+            noteHtml +
+          '</span>';
+
+        item.onclick = function () {
+          var all = document.querySelectorAll('.item');
+          for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
+          item.classList.add('active');
+          map.setCenter([p.lat, p.lon], 9, { duration: 500 });
+          setTimeout(function () {
+            var pm = marksByTruck[p.truck];
+            if (pm) pm.balloon.open();
+          }, 560);
+        };
+
+        list.appendChild(item);
+      });
+    }
+
+    function balloonBody(p) {
+      var lost = p.days >= 5;
+      var noteBlock = p.note
+        ? '<div style="margin-top:10px;padding:8px 10px;background:#fff8e1;' +
+          'border-left:3px solid #e08b1e;border-radius:0 4px 4px 0;font-size:12px;color:#5d4037">' +
+          '<b>Комментарий</b><br>' + escapeXml(p.note) + '</div>'
+        : '';
+
+      var lostBlock = lost
+        ? '<div style="color:#c0392b;margin-top:9px;font-weight:600;font-size:12px">Связь потеряна</div>'
+        : '';
+
+      return '<div style="font-size:13px;line-height:1.85;min-width:200px">' +
+          '<table style="width:100%;border-collapse:collapse">' +
+            '<tr><td style="color:#78909c;padding-right:12px">До Москвы</td>' +
+                '<td style="text-align:right;font-weight:600">' + kmText(p.km) + '</td></tr>' +
+            '<tr><td style="color:#78909c">Прибытие</td>' +
+                '<td style="text-align:right;font-weight:600">' + etaText(p.eta) + '</td></tr>' +
+            '<tr><td style="color:#78909c">Обновлено</td>' +
+                '<td style="text-align:right">' + p.ts.toLocaleDateString('ru-RU') + '</td></tr>' +
+            '<tr><td style="color:#78909c">Давность</td>' +
+                '<td style="text-align:right;color:' + (lost ? '#c0392b' : '#37474f') + '">' + agoText(p.days) + '</td></tr>' +
+          '</table>' +
+          noteBlock + lostBlock +
+        '</div>';
+    }
+
     function refresh() {
       fetch(API + '?t=' + Date.now())
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          data.sort(function (a, b) { return new Date(b.ts) - new Date(a.ts); });
-
-          cluster.removeAll();
-          var list = document.getElementById('list');
-          list.innerHTML = '';
-
-          data.forEach(function (p) {
+          records = data.map(function (p) {
             var ts = new Date(p.ts);
             var days = Math.floor((Date.now() - ts) / 864e5);
-            var color = ageColor(days);
-            var lost = days >= 5;
+            return {
+              truck: p.truck, lat: p.lat, lon: p.lon, ts: ts, days: days,
+              km: p.km || 0, eta: (p.eta === 0 ? 0 : (p.eta || 0)),
+              note: p.note || '', color: ageColor(days)
+            };
+          });
 
+          records.sort(function (a, b) { return a.km - b.km; });
+
+          cluster.removeAll();
+          marksByTruck = {};
+
+          var placemarks = records.map(function (p) {
             var pm = new ymaps.Placemark([p.lat, p.lon], {
               balloonContentHeader: 'Автовоз ' + p.truck,
-              balloonContentBody:
-                '<div style="font-size:13px;line-height:1.8">' +
-                  'Обновлено: <b>' + ts.toLocaleDateString('ru-RU') + '</b><br>' +
-                  '<span style="color:#78909c">' + agoText(days) + '</span>' +
-                  (lost ? '<div style="color:#c0392b;margin-top:8px;font-weight:600">Связь потеряна</div>' : '') +
-                '</div>',
-              hintContent: '<b>' + p.truck + '</b> · ' + agoText(days)
+              balloonContentBody: balloonBody(p),
+              hintContent: '<b>' + p.truck + '</b> · ' + kmText(p.km) + ' до Москвы',
+              clusterCaption: p.truck + ' · ' + kmText(p.km)
             }, {
               iconLayout: 'default#image',
-              iconImageHref: svgDataURL(color),
-              iconImageSize: [46, 30],
-              iconImageOffset: [-23, -26]
+              iconImageHref: markerSVG(p.color, p.truck, !!p.note),
+              iconImageSize: [Math.max(58, p.truck.length * 7.4 + 16), 52],
+              iconImageOffset: [-Math.max(58, p.truck.length * 7.4 + 16) / 2, -48],
+              balloonMaxWidth: 280,
+              hideIconOnBalloonOpen: false
             });
-
-            cluster.add(pm);
-
-            var item = document.createElement('div');
-            item.className = 'item' + (lost ? ' lost' : '');
-            item.innerHTML =
-              '<span class="ico">' + truckSVG(color, 22, 15) + '</span>' +
-              '<span class="txt">' +
-                '<div class="name">' + p.truck + '</div>' +
-                '<div class="ago">' + agoText(days) + '</div>' +
-              '</span>';
-
-            item.onclick = function () {
-              var all = document.querySelectorAll('.item');
-              for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
-              item.classList.add('active');
-              map.setCenter([p.lat, p.lon], 9, { duration: 500 });
-              setTimeout(function () { pm.balloon.open(); }, 550);
-            };
-
-            list.appendChild(item);
+            marksByTruck[p.truck] = pm;
+            return pm;
           });
 
-          if (data.length) {
-            map.setBounds(cluster.getBounds(), { checkZoomRange: true, zoomMargin: 70 });
+          cluster.add(placemarks);
+
+          if (placemarks.length) {
+            map.setBounds(cluster.getBounds(), { checkZoomRange: true, zoomMargin: 80 });
           }
 
-          var lostCount = 0;
-          data.forEach(function (p) {
-            if (Math.floor((Date.now() - new Date(p.ts)) / 864e5) >= 5) lostCount++;
-          });
+          var lostCount = records.filter(function (p) { return p.days >= 5; }).length;
+          var noteCount = records.filter(function (p) { return p.note; }).length;
 
-          document.getElementById('count').textContent =
-            'В пути: ' + data.length + (lostCount ? ' · без связи: ' + lostCount : '');
+          var sub = 'В пути: ' + records.length;
+          if (lostCount) sub += ' · без связи: ' + lostCount;
+          if (noteCount) sub += ' · с примечаниями: ' + noteCount;
+          document.getElementById('count').textContent = sub;
+
           document.getElementById('stamp').textContent =
             'Обновлено ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+
+          renderList(document.getElementById('search').value.trim().toLowerCase());
         })
         .catch(function () {
           document.getElementById('count').textContent = 'Ошибка загрузки';
