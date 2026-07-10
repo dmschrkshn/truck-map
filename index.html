@@ -5,100 +5,232 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Автовозы в пути</title>
   <style>
-    html, body, #map { margin:0; padding:0; width:100%; height:100%; }
-    #legend {
-      position:absolute; bottom:24px; left:12px; z-index:1000;
-      background:#fff; padding:10px 14px; border-radius:8px;
-      box-shadow:0 2px 10px rgba(0,0,0,.18);
-      font:13px/1.7 -apple-system, "Segoe UI", Roboto, sans-serif;
+    * { box-sizing: border-box; }
+    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden;
+      font-family: -apple-system, "Segoe UI", Roboto, Helvetica, sans-serif; }
+    #map { width:100%; height:100%; }
+
+    #panel {
+      position:absolute; top:0; left:0; bottom:0; width:280px; z-index:1000;
+      background:#fff; box-shadow:2px 0 14px rgba(0,0,0,.12);
+      display:flex; flex-direction:column; transition:transform .25s ease;
     }
-    #legend b { display:block; margin-bottom:6px; font-size:11px; letter-spacing:.04em; color:#888; }
-    #legend div { display:flex; align-items:center; gap:9px; }
-    .dot { width:11px; height:11px; border-radius:50%; flex:none; }
+    #panel.hidden { transform:translateX(-280px); }
+    #panel-head { padding:16px 18px 12px; border-bottom:1px solid #eceff1; }
+    #panel-head h1 { margin:0 0 3px; font-size:16px; font-weight:600; color:#1c2833; }
+    #panel-head span { font-size:12px; color:#90a4ae; }
+    #list { flex:1; overflow-y:auto; padding:6px 0; }
+
+    .item {
+      display:flex; align-items:center; gap:11px;
+      padding:11px 18px; cursor:pointer; border-left:3px solid transparent;
+      transition:background .12s;
+    }
+    .item:hover { background:#f5f7f9; }
+    .item.active { background:#eef4f8; border-left-color:#2c7fb8; }
+    .item .ico { width:22px; height:22px; flex:none; display:flex; align-items:center; }
+    .item .txt { min-width:0; }
+    .item .name { font-size:14px; font-weight:600; color:#263238; }
+    .item .ago { font-size:12px; color:#78909c; margin-top:1px; }
+    .item.lost .ago { color:#c0392b; font-weight:600; }
+
+    #toggle {
+      position:absolute; top:14px; left:294px; z-index:1001;
+      width:34px; height:34px; border:0; border-radius:7px; background:#fff;
+      box-shadow:0 2px 8px rgba(0,0,0,.16); cursor:pointer;
+      font-size:17px; line-height:1; color:#455a64; transition:left .25s ease;
+    }
+    #panel.hidden ~ #toggle { left:14px; }
+
+    #legend {
+      position:absolute; bottom:20px; right:14px; z-index:1000;
+      background:#fff; padding:11px 15px; border-radius:9px;
+      box-shadow:0 2px 12px rgba(0,0,0,.16); font-size:13px; line-height:1.75;
+    }
+    #legend b { display:block; margin-bottom:7px; font-size:10px;
+      letter-spacing:.06em; color:#90a4ae; font-weight:600; }
+    #legend div { display:flex; align-items:center; gap:9px; color:#37474f; }
+    #legend .sw { width:13px; height:13px; border-radius:3px; flex:none; }
+
     #stamp {
-      position:absolute; top:12px; right:12px; z-index:1000;
-      background:rgba(255,255,255,.94); padding:7px 13px; border-radius:6px;
-      font:12px -apple-system, "Segoe UI", Roboto, sans-serif; color:#555;
-      box-shadow:0 2px 10px rgba(0,0,0,.15);
+      position:absolute; top:14px; right:14px; z-index:1000;
+      background:rgba(255,255,255,.95); padding:7px 13px; border-radius:7px;
+      font-size:12px; color:#546e7a; box-shadow:0 2px 10px rgba(0,0,0,.13);
+    }
+
+    @media (max-width: 720px) {
+      #panel { width:240px; }
+      #panel.hidden { transform:translateX(-240px); }
+      #toggle { left:254px; }
+      #legend { bottom:12px; right:10px; font-size:12px; padding:9px 12px; }
+      #stamp { display:none; }
     }
   </style>
 </head>
 <body>
   <div id="map"></div>
+
+  <div id="panel">
+    <div id="panel-head">
+      <h1>Автовозы в пути</h1>
+      <span id="count">загрузка…</span>
+    </div>
+    <div id="list"></div>
+  </div>
+  <button id="toggle" title="Свернуть список">☰</button>
+
   <div id="stamp">загрузка…</div>
+
   <div id="legend">
     <b>ДАВНОСТЬ ДАННЫХ</b>
-    <div><span class="dot" style="background:#2ecc71"></span> до 2 дней</div>
-    <div><span class="dot" style="background:#f39c12"></span> 3–4 дня</div>
-    <div><span class="dot" style="background:#000000"></span> 5 дней и более</div>
+    <div><span class="sw" style="background:#2e9e5b"></span> до 2 дней</div>
+    <div><span class="sw" style="background:#e08b1e"></span> 3–4 дня</div>
+    <div><span class="sw" style="background:#222"></span> 5 дней и более</div>
   </div>
 
-  <!-- ↓↓↓ ЗАМЕНИТЕ ВСТАВЬТЕ_КЛЮЧ НА КЛЮЧ ЯНДЕКСА ↓↓↓ -->
   <script src="https://api-maps.yandex.ru/2.1/?apikey=aeb19683-8505-416a-a1c4-090e24030cd0&lang=ru_RU"></script>
 
   <script>
-    const API = 'https://script.google.com/macros/s/AKfycbwdjusGg4nQmK9jieXklITebNhkSC4Pu8fbqA2NsGxgtjhRk_id0W7MbYForU901Xki/exec';
+    var API = 'https://script.google.com/macros/s/AKfycbwdjusGg4nQmK9jieXklITebNhkSC4Pu8fbqA2NsGxgtjhRk_id0W7MbYForU901Xki/exec';
 
-    let map, cluster;
+    var map, cluster;
 
-    ymaps.ready(function () {
-      map = new ymaps.Map('map', {
-        center: [55.75, 37.62], zoom: 4,
-        controls: ['zoomControl', 'fullscreenControl']
-      });
-      cluster = new ymaps.Clusterer({ groupByCoordinates: false, gridSize: 48 });
-      map.geoObjects.add(cluster);
-      refresh();
-      setInterval(refresh, 300000);
-    });
+    function truckSVG(color, w, h) {
+      w = w || 46; h = h || 30;
+      return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 46 30" width="' + w + '" height="' + h + '">' +
+        '<g fill="none" fill-rule="evenodd">' +
+          '<path d="M9 4h30v3H9z" fill="' + color + '" opacity=".5"/>' +
+          '<rect x="12" y="1.4" width="7" height="3.2" rx="1" fill="' + color + '" opacity=".8"/>' +
+          '<rect x="21" y="1.4" width="7" height="3.2" rx="1" fill="' + color + '" opacity=".8"/>' +
+          '<rect x="30" y="1.4" width="7" height="3.2" rx="1" fill="' + color + '" opacity=".8"/>' +
+          '<path d="M9.5 7v9M38.5 7v9" stroke="' + color + '" stroke-width="1.4" opacity=".6"/>' +
+          '<path d="M2 11h6l3 4v6H2z" fill="' + color + '"/>' +
+          '<rect x="3.4" y="12.4" width="3.4" height="3" rx=".6" fill="#fff" opacity=".85"/>' +
+          '<rect x="11" y="9" width="28" height="12" rx="1.4" fill="' + color + '"/>' +
+          '<rect x="14" y="11.5" width="7.5" height="4" rx="1" fill="#fff" opacity=".78"/>' +
+          '<rect x="23.5" y="11.5" width="7.5" height="4" rx="1" fill="#fff" opacity=".78"/>' +
+          '<circle cx="7" cy="23.5" r="3.6" fill="#1a1a1a"/>' +
+          '<circle cx="7" cy="23.5" r="1.5" fill="#eceff1"/>' +
+          '<circle cx="28" cy="23.5" r="3.6" fill="#1a1a1a"/>' +
+          '<circle cx="28" cy="23.5" r="1.5" fill="#eceff1"/>' +
+          '<circle cx="36.5" cy="23.5" r="3.6" fill="#1a1a1a"/>' +
+          '<circle cx="36.5" cy="23.5" r="1.5" fill="#eceff1"/>' +
+        '</g></svg>';
+    }
+
+    function svgDataURL(color) {
+      return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(truckSVG(color, 46, 30));
+    }
 
     function ageColor(d) {
-      if (d <= 2) return '#2ecc71';
-      if (d <= 4) return '#f39c12';
-      return '#000000';
+      if (d <= 2) return '#2e9e5b';
+      if (d <= 4) return '#e08b1e';
+      return '#222222';
     }
 
     function agoText(d) {
-      if (d === 0) return 'сегодня';
-      if (d === 1) return 'вчера';
+      if (d === 0) return 'обновлено сегодня';
+      if (d === 1) return 'обновлено вчера';
       var last = d % 10, tens = d % 100;
       var w = (last === 1 && tens !== 11) ? 'день'
             : (last >= 2 && last <= 4 && (tens < 12 || tens > 14)) ? 'дня' : 'дней';
       return d + ' ' + w + ' назад';
     }
 
-    async function refresh() {
-      try {
-        const res = await fetch(API + '?t=' + Date.now());
-        const data = await res.json();
-        cluster.removeAll();
+    ymaps.ready(function () {
+      map = new ymaps.Map('map', {
+        center: [55.75, 37.62], zoom: 4,
+        controls: ['zoomControl', 'fullscreenControl', 'typeSelector']
+      }, { suppressMapOpenBlock: true });
 
-        const marks = data.map(function (p) {
-          const ts = new Date(p.ts);
-          const days = Math.floor((Date.now() - ts) / 864e5);
-          const warn = days >= 5
-            ? '<div style="color:#c0392b;margin-top:7px"><b>Связь потеряна</b></div>' : '';
+      cluster = new ymaps.Clusterer({
+        groupByCoordinates: false,
+        gridSize: 64,
+        clusterDisableClickZoom: false
+      });
+      map.geoObjects.add(cluster);
 
-          return new ymaps.Placemark([p.lat, p.lon], {
-            balloonContentHeader: 'Автовоз ' + p.truck,
-            balloonContentBody:
-              'Обновлено: <b>' + ts.toLocaleDateString('ru-RU') + '</b><br>' + agoText(days) + warn,
-            hintContent: p.truck + ' · ' + agoText(days)
-          }, {
-            preset: 'islands#circleDotIcon',
-            iconColor: ageColor(days)
+      refresh();
+      setInterval(refresh, 300000);
+    });
+
+    document.getElementById('toggle').onclick = function () {
+      document.getElementById('panel').classList.toggle('hidden');
+      setTimeout(function () { if (map) map.container.fitToViewport(); }, 260);
+    };
+
+    function refresh() {
+      fetch(API + '?t=' + Date.now())
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          data.sort(function (a, b) { return new Date(b.ts) - new Date(a.ts); });
+
+          cluster.removeAll();
+          var list = document.getElementById('list');
+          list.innerHTML = '';
+
+          data.forEach(function (p) {
+            var ts = new Date(p.ts);
+            var days = Math.floor((Date.now() - ts) / 864e5);
+            var color = ageColor(days);
+            var lost = days >= 5;
+
+            var pm = new ymaps.Placemark([p.lat, p.lon], {
+              balloonContentHeader: 'Автовоз ' + p.truck,
+              balloonContentBody:
+                '<div style="font-size:13px;line-height:1.8">' +
+                  'Обновлено: <b>' + ts.toLocaleDateString('ru-RU') + '</b><br>' +
+                  '<span style="color:#78909c">' + agoText(days) + '</span>' +
+                  (lost ? '<div style="color:#c0392b;margin-top:8px;font-weight:600">Связь потеряна</div>' : '') +
+                '</div>',
+              hintContent: '<b>' + p.truck + '</b> · ' + agoText(days)
+            }, {
+              iconLayout: 'default#image',
+              iconImageHref: svgDataURL(color),
+              iconImageSize: [46, 30],
+              iconImageOffset: [-23, -26]
+            });
+
+            cluster.add(pm);
+
+            var item = document.createElement('div');
+            item.className = 'item' + (lost ? ' lost' : '');
+            item.innerHTML =
+              '<span class="ico">' + truckSVG(color, 22, 15) + '</span>' +
+              '<span class="txt">' +
+                '<div class="name">' + p.truck + '</div>' +
+                '<div class="ago">' + agoText(days) + '</div>' +
+              '</span>';
+
+            item.onclick = function () {
+              var all = document.querySelectorAll('.item');
+              for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
+              item.classList.add('active');
+              map.setCenter([p.lat, p.lon], 9, { duration: 500 });
+              setTimeout(function () { pm.balloon.open(); }, 550);
+            };
+
+            list.appendChild(item);
           });
-        });
 
-        cluster.add(marks);
-        if (marks.length) {
-          map.setBounds(cluster.getBounds(), { checkZoomRange: true, zoomMargin: 50 });
-        }
-        document.getElementById('stamp').textContent =
-          'Автовозов на карте: ' + marks.length + ' · ' + new Date().toLocaleTimeString('ru-RU');
-      } catch (err) {
-        document.getElementById('stamp').textContent = 'Ошибка загрузки данных';
-      }
+          if (data.length) {
+            map.setBounds(cluster.getBounds(), { checkZoomRange: true, zoomMargin: 70 });
+          }
+
+          var lostCount = 0;
+          data.forEach(function (p) {
+            if (Math.floor((Date.now() - new Date(p.ts)) / 864e5) >= 5) lostCount++;
+          });
+
+          document.getElementById('count').textContent =
+            'В пути: ' + data.length + (lostCount ? ' · без связи: ' + lostCount : '');
+          document.getElementById('stamp').textContent =
+            'Обновлено ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        })
+        .catch(function () {
+          document.getElementById('count').textContent = 'Ошибка загрузки';
+          document.getElementById('stamp').textContent = 'Нет связи с базой';
+        });
     }
   </script>
 </body>
