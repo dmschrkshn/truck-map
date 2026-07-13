@@ -21,13 +21,13 @@
     #panel-head .sub { font-size:12px; color:#90a4ae; margin-bottom:11px; }
 
     #search {
-      width:100%; padding:8px 11px; font-size:13px;
+      width:100%; padding:8px 11px; font-size:16px;
       border:1px solid #cfd8dc; border-radius:7px; outline:none;
       transition:border-color .15s;
     }
     #search:focus { border-color:#2c7fb8; }
 
-    #list { flex:1; overflow-y:auto; padding:5px 0; }
+    #list { flex:1; overflow-y:auto; padding:5px 0; -webkit-overflow-scrolling:touch; }
     #empty { padding:22px 16px; font-size:13px; color:#b0bec5; text-align:center; }
 
     .item {
@@ -40,22 +40,27 @@
     .item .ico { width:24px; flex:none; padding-top:2px; }
     .item .txt { min-width:0; flex:1; }
     .item .name { font-size:14px; font-weight:600; color:#263238; }
-    .item .meta { font-size:12px; color:#78909c; margin-top:2px; }
+    .item .meta { font-size:12px; color:#78909c; margin-top:2px; line-height:1.5; }
     .item .note {
       font-size:11px; color:#8d6e63; margin-top:4px;
       background:#fff8e1; padding:3px 7px; border-radius:4px;
       display:inline-block; max-width:100%; overflow:hidden;
       text-overflow:ellipsis; white-space:nowrap;
     }
-    .item.lost .meta { color:#c0392b; font-weight:600; }
+    .item.lost .meta { color:#c0392b; }
 
+    /* Кнопка открытия панели — с текстом «Поиск» */
     #toggle {
       position:absolute; top:14px; left:314px; z-index:1001;
-      width:34px; height:34px; border:0; border-radius:7px; background:#fff;
-      box-shadow:0 2px 8px rgba(0,0,0,.16); cursor:pointer;
-      font-size:17px; line-height:1; color:#455a64; transition:left .25s ease;
+      height:38px; padding:0 14px; border:0; border-radius:9px; background:#fff;
+      box-shadow:0 2px 10px rgba(0,0,0,.18); cursor:pointer;
+      font-size:14px; font-weight:600; line-height:1; color:#37474f;
+      display:flex; align-items:center; gap:7px; transition:left .25s ease;
     }
+    #toggle .ic { font-size:16px; }
+    #toggle .label { display:none; }          /* по умолчанию (десктоп) — только иконка */
     #panel.hidden ~ #toggle { left:14px; }
+    #panel.hidden ~ #toggle .label { display:inline; }  /* когда свёрнута — показываем «Поиск» */
 
     #legend {
       position:absolute; bottom:20px; right:14px; z-index:1000;
@@ -73,11 +78,26 @@
       font-size:12px; color:#546e7a; box-shadow:0 2px 10px rgba(0,0,0,.13);
     }
 
+    /* Затемнение под панелью на мобильном */
+    #backdrop {
+      position:absolute; inset:0; z-index:999; background:rgba(0,0,0,.35);
+      opacity:0; pointer-events:none; transition:opacity .25s;
+    }
+
     @media (max-width: 720px) {
-      #panel { width:250px; }
-      #panel.hidden { transform:translateX(-250px); }
-      #toggle { left:264px; }
-      #legend { bottom:12px; right:10px; font-size:12px; padding:9px 12px; }
+      #panel {
+        width:82%; max-width:330px;
+        box-shadow:2px 0 22px rgba(0,0,0,.28);
+      }
+      #panel.hidden { transform:translateX(-105%); }
+      #toggle {
+        left:14px; top:14px;                 /* всегда слева, панель по умолчанию скрыта */
+        height:42px; padding:0 16px; font-size:15px;
+      }
+      #toggle .label { display:inline; }      /* на мобильном подпись видна всегда */
+      #panel:not(.hidden) ~ #backdrop { opacity:1; pointer-events:auto; }
+      #legend { bottom:12px; right:10px; font-size:11px; padding:8px 11px; line-height:1.6; }
+      #legend .sw { width:11px; height:11px; }
       #stamp { display:none; }
     }
   </style>
@@ -93,15 +113,19 @@
     </div>
     <div id="list"></div>
   </div>
-  <button id="toggle" title="Свернуть список">☰</button>
+  <div id="backdrop"></div>
+  <button id="toggle" title="Открыть список и поиск">
+    <span class="ic">🔍</span><span class="label">Поиск</span>
+  </button>
 
   <div id="stamp">загрузка…</div>
 
   <div id="legend">
-    <b>ДАВНОСТЬ ДАННЫХ</b>
-    <div><span class="sw" style="background:#2e9e5b"></span> до 2 дней</div>
+    <b>СОСТОЯНИЕ</b>
+    <div><span class="sw" style="background:#2e9e5b"></span> данные до 2 дней</div>
     <div><span class="sw" style="background:#e08b1e"></span> 3–4 дня</div>
     <div><span class="sw" style="background:#222"></span> 5 дней и более</div>
+    <div><span class="sw" style="background:#1565c0"></span> малое перемещение</div>
   </div>
 
   <script src="https://api-maps.yandex.ru/2.1/?apikey=aeb19683-8505-416a-a1c4-090e24030cd0&lang=ru_RU"></script>
@@ -110,6 +134,7 @@
     var API = 'https://script.google.com/macros/s/AKfycbwdjusGg4nQmK9jieXklITebNhkSC4Pu8fbqA2NsGxgtjhRk_id0W7MbYForU901Xki/exec';
 
     var map, cluster, records = [], marksByTruck = {};
+    var isMobile = window.matchMedia('(max-width: 720px)').matches;
 
     function truckSVG(color, w, h) {
       w = w || 46; h = h || 30;
@@ -139,18 +164,31 @@
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    function markerSVG(color, label, hasNote) {
+    function markerLabelWidth(label) {
+      return Math.max(58, label.length * 7.4 + 16);
+    }
+
+    function markerSVG(color, label, hasNote, stuck) {
       var text = escapeXml(label);
-      var w = Math.max(58, text.length * 7.4 + 16);
+      var w = markerLabelWidth(label);
       var svgW = Math.max(w, 46);
       var cx = svgW / 2;
+
+      var badge = '';
+      if (stuck) {
+        badge = '<circle cx="' + (cx + w / 2 - 4) + '" cy="3" r="5.5" fill="#fff" stroke="' + color + '" stroke-width="1"/>' +
+                '<text x="' + (cx + w / 2 - 4) + '" y="6.4" font-size="9" font-weight="700" fill="' + color +
+                '" text-anchor="middle" font-family="Arial">!</text>';
+      } else if (hasNote) {
+        badge = '<circle cx="' + (cx + w / 2 - 4) + '" cy="3" r="4.5" fill="#c0392b" stroke="#fff" stroke-width="1.2"/>';
+      }
 
       return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
         '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="52" viewBox="0 0 ' + svgW + ' 52">' +
           '<rect x="' + (cx - w / 2) + '" y="0" width="' + w + '" height="17" rx="4" fill="' + color + '"/>' +
           '<text x="' + cx + '" y="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" ' +
             'font-size="11" font-weight="600" fill="#fff" text-anchor="middle">' + text + '</text>' +
-          (hasNote ? '<circle cx="' + (cx + w / 2 - 4) + '" cy="3" r="4.5" fill="#c0392b" stroke="#fff" stroke-width="1.2"/>' : '') +
+          badge +
           '<g transform="translate(' + (cx - 23) + ',20)">' +
             truckSVG(color, 46, 30).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '') +
           '</g>' +
@@ -162,6 +200,11 @@
       if (d <= 2) return '#2e9e5b';
       if (d <= 4) return '#e08b1e';
       return '#222222';
+    }
+
+    function markColor(p) {
+      if (p.stuck) return '#1565c0';
+      return ageColor(p.days);
     }
 
     function agoText(d) {
@@ -186,7 +229,21 @@
     }
 
     function kmText(km) {
-      return km.toLocaleString('ru-RU') + ' км';
+      return Number(km).toLocaleString('ru-RU') + ' км';
+    }
+
+    // ---- Управление панелью ----
+    function openPanel() {
+      document.getElementById('panel').classList.remove('hidden');
+      setTimeout(function () { if (map) map.container.fitToViewport(); }, 260);
+    }
+    function closePanel() {
+      document.getElementById('panel').classList.add('hidden');
+      setTimeout(function () { if (map) map.container.fitToViewport(); }, 260);
+    }
+    function togglePanel() {
+      if (document.getElementById('panel').classList.contains('hidden')) openPanel();
+      else closePanel();
     }
 
     ymaps.ready(function () {
@@ -209,14 +266,15 @@
       });
       map.geoObjects.add(cluster);
 
+      // На мобильном панель стартует свёрнутой
+      if (isMobile) document.getElementById('panel').classList.add('hidden');
+
       refresh();
       setInterval(refresh, 300000);
     });
 
-    document.getElementById('toggle').onclick = function () {
-      document.getElementById('panel').classList.toggle('hidden');
-      setTimeout(function () { if (map) map.container.fitToViewport(); }, 260);
-    };
+    document.getElementById('toggle').onclick = togglePanel;
+    document.getElementById('backdrop').onclick = closePanel;
 
     document.getElementById('search').oninput = function () {
       renderList(this.value.trim().toLowerCase());
@@ -243,11 +301,16 @@
           ? '<div class="note" title="' + escapeXml(p.note) + '">' + escapeXml(p.note) + '</div>'
           : '';
 
+        var metaLine = kmText(p.km) + ' до Москвы · ' + etaText(p.eta) +
+          (p.leg !== null ? ' · прошёл ' + kmText(p.leg) : '') +
+          ' · ' + agoText(p.days) +
+          (p.stuck ? ' · <b style="color:#1565c0">стоит</b>' : '');
+
         item.innerHTML =
-          '<span class="ico">' + truckSVG(p.color, 24, 16) + '</span>' +
+          '<span class="ico">' + truckSVG(markColor(p), 24, 16) + '</span>' +
           '<span class="txt">' +
             '<div class="name">' + p.truck + '</div>' +
-            '<div class="meta">' + kmText(p.km) + ' · ' + etaText(p.eta) + ' · ' + agoText(p.days) + '</div>' +
+            '<div class="meta">' + metaLine + '</div>' +
             noteHtml +
           '</span>';
 
@@ -255,11 +318,15 @@
           var all = document.querySelectorAll('.item');
           for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
           item.classList.add('active');
+
+          // На мобильном закрываем панель, чтобы видеть карту
+          if (isMobile) closePanel();
+
           map.setCenter([p.lat, p.lon], 9, { duration: 500 });
           setTimeout(function () {
             var pm = marksByTruck[p.truck];
             if (pm) pm.balloon.open();
-          }, 560);
+          }, isMobile ? 620 : 560);
         };
 
         list.appendChild(item);
@@ -268,28 +335,41 @@
 
     function balloonBody(p) {
       var lost = p.days >= 5;
+
+      var legRow = p.leg !== null
+        ? '<tr><td style="color:#78909c;padding-right:12px">Прошёл с прошлого раза</td>' +
+          '<td style="text-align:right;font-weight:600">' + kmText(p.leg) + '</td></tr>'
+        : '';
+
       var noteBlock = p.note
         ? '<div style="margin-top:10px;padding:8px 10px;background:#fff8e1;' +
           'border-left:3px solid #e08b1e;border-radius:0 4px 4px 0;font-size:12px;color:#5d4037">' +
           '<b>Комментарий</b><br>' + escapeXml(p.note) + '</div>'
         : '';
 
-      var lostBlock = lost
-        ? '<div style="color:#c0392b;margin-top:9px;font-weight:600;font-size:12px">Связь потеряна</div>'
+      var stuckBlock = p.stuck
+        ? '<div style="margin-top:9px;padding:8px 10px;background:#e3f2fd;' +
+          'border-left:3px solid #1565c0;border-radius:0 4px 4px 0;font-size:12px;color:#0d47a1">' +
+          '<b>Малое перемещение</b><br>Автовоз почти не сдвинулся с прошлой отметки — возможна стоянка или задержка</div>'
         : '';
 
-      return '<div style="font-size:13px;line-height:1.85;min-width:200px">' +
+      var lostBlock = lost
+        ? '<div style="color:#c0392b;margin-top:9px;font-weight:600;font-size:12px">Связь потеряна более 5 дней</div>'
+        : '';
+
+      return '<div style="font-size:13px;line-height:1.85;min-width:210px">' +
           '<table style="width:100%;border-collapse:collapse">' +
             '<tr><td style="color:#78909c;padding-right:12px">До Москвы</td>' +
                 '<td style="text-align:right;font-weight:600">' + kmText(p.km) + '</td></tr>' +
             '<tr><td style="color:#78909c">Прибытие</td>' +
                 '<td style="text-align:right;font-weight:600">' + etaText(p.eta) + '</td></tr>' +
+            legRow +
             '<tr><td style="color:#78909c">Обновлено</td>' +
                 '<td style="text-align:right">' + p.ts.toLocaleDateString('ru-RU') + '</td></tr>' +
             '<tr><td style="color:#78909c">Давность</td>' +
                 '<td style="text-align:right;color:' + (lost ? '#c0392b' : '#37474f') + '">' + agoText(p.days) + '</td></tr>' +
           '</table>' +
-          noteBlock + lostBlock +
+          noteBlock + stuckBlock + lostBlock +
         '</div>';
     }
 
@@ -303,27 +383,35 @@
             return {
               truck: p.truck, lat: p.lat, lon: p.lon, ts: ts, days: days,
               km: p.km || 0, eta: (p.eta === 0 ? 0 : (p.eta || 0)),
-              note: p.note || '', color: ageColor(days)
+              note: p.note || '', color: ageColor(days),
+              leg: (p.leg === null || p.leg === undefined) ? null : p.leg,
+              stuck: !!p.stuck
             };
           });
 
-          records.sort(function (a, b) { return a.km - b.km; });
+          records.sort(function (a, b) {
+            if (a.stuck !== b.stuck) return a.stuck ? -1 : 1;
+            return a.km - b.km;
+          });
 
           cluster.removeAll();
           marksByTruck = {};
 
           var placemarks = records.map(function (p) {
+            var color = markColor(p);
+            var w = markerLabelWidth(p.truck);
             var pm = new ymaps.Placemark([p.lat, p.lon], {
               balloonContentHeader: 'Автовоз ' + p.truck,
               balloonContentBody: balloonBody(p),
-              hintContent: '<b>' + p.truck + '</b> · ' + kmText(p.km) + ' до Москвы',
+              hintContent: '<b>' + p.truck + '</b> · ' + kmText(p.km) + ' до Москвы' +
+                (p.stuck ? ' · стоит' : ''),
               clusterCaption: p.truck + ' · ' + kmText(p.km)
             }, {
               iconLayout: 'default#image',
-              iconImageHref: markerSVG(p.color, p.truck, !!p.note),
-              iconImageSize: [Math.max(58, p.truck.length * 7.4 + 16), 52],
-              iconImageOffset: [-Math.max(58, p.truck.length * 7.4 + 16) / 2, -48],
-              balloonMaxWidth: 280,
+              iconImageHref: markerSVG(color, p.truck, !!p.note, p.stuck),
+              iconImageSize: [w, 52],
+              iconImageOffset: [-w / 2, -48],
+              balloonMaxWidth: 290,
               hideIconOnBalloonOpen: false
             });
             marksByTruck[p.truck] = pm;
@@ -337,11 +425,11 @@
           }
 
           var lostCount = records.filter(function (p) { return p.days >= 5; }).length;
-          var noteCount = records.filter(function (p) { return p.note; }).length;
+          var stuckCount = records.filter(function (p) { return p.stuck; }).length;
 
           var sub = 'В пути: ' + records.length;
+          if (stuckCount) sub += ' · стоят: ' + stuckCount;
           if (lostCount) sub += ' · без связи: ' + lostCount;
-          if (noteCount) sub += ' · с примечаниями: ' + noteCount;
           document.getElementById('count').textContent = sub;
 
           document.getElementById('stamp').textContent =
