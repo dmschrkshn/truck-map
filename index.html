@@ -309,7 +309,7 @@
         item.innerHTML =
           '<span class="ico">' + truckSVG(markColor(p), 24, 16) + '</span>' +
           '<span class="txt">' +
-            '<div class="name">' + p.truck + '</div>' +
+            '<div class="name">' + p.truck + (p.prev ? ' <span style="font-weight:400;color:#b0bec5;font-size:11px">← ' + p.prev + '</span>' : '') + '</div>' +
             '<div class="meta">' + metaLine + '</div>' +
             noteHtml +
           '</span>';
@@ -385,7 +385,8 @@
               km: p.km || 0, eta: (p.eta === 0 ? 0 : (p.eta || 0)),
               note: p.note || '', color: ageColor(days),
               leg: (p.leg === null || p.leg === undefined) ? null : p.leg,
-              stuck: !!p.stuck
+              stuck: !!p.stuck,
+              prev: p.prev || ''
             };
           });
 
@@ -401,9 +402,9 @@
             var color = markColor(p);
             var w = markerLabelWidth(p.truck);
             var pm = new ymaps.Placemark([p.lat, p.lon], {
-              balloonContentHeader: 'Автовоз ' + p.truck,
+              balloonContentHeader: 'Автовоз ' + p.truck + (p.prev ? ' <span style="font-weight:400;color:#90a4ae;font-size:12px">(ранее ' + p.prev + ')</span>' : ''),
               balloonContentBody: balloonBody(p),
-              hintContent: '<b>' + p.truck + '</b> · ' + kmText(p.km) + ' до Москвы' +
+              hintContent: '<b>' + p.truck + '</b>' + (p.prev ? ' (ранее ' + p.prev + ')' : '') + ' · ' + kmText(p.km) + ' до Москвы' +
                 (p.stuck ? ' · стоит' : ''),
               clusterCaption: p.truck + ' · ' + kmText(p.km)
             }, {
