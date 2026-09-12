@@ -67,9 +67,14 @@
       background:#fff; padding:11px 15px; border-radius:9px;
       box-shadow:0 2px 12px rgba(0,0,0,.16); font-size:13px; line-height:1.75;
     }
-    #legend b { display:block; margin-bottom:7px; font-size:10px;
-      letter-spacing:.06em; color:#90a4ae; font-weight:600; }
-    #legend div { display:flex; align-items:center; gap:9px; color:#37474f; }
+    /* заголовок легенды: на десктопе — просто подпись, на телефоне — кнопка */
+    #legend-toggle {
+      display:block; border:0; background:none; padding:0; margin:0 0 7px;
+      font:inherit; font-size:10px; font-weight:600; letter-spacing:.06em;
+      text-transform:uppercase; color:#90a4ae; cursor:default; pointer-events:none;
+    }
+    #legend .lg-body > div { display:flex; align-items:center; gap:9px; color:#37474f; }
+    #panel-close { display:none; }
     #legend .sw { width:13px; height:13px; border-radius:3px; flex:none; }
 
     #stamp {
@@ -85,20 +90,49 @@
     }
 
     @media (max-width: 720px) {
-      #panel {
-        width:82%; max-width:330px;
-        box-shadow:2px 0 22px rgba(0,0,0,.28);
+      /* список — на весь экран, со своим крестиком; ничего поверх него */
+      #panel { width:100%; max-width:none; box-shadow:none; }
+      #panel.hidden { transform:translateX(-102%); }
+      #panel-head { position:relative; padding:12px 14px 10px; }
+      #panel-head h1 { font-size:17px; padding-right:48px; }
+      #panel-close {
+        display:flex; align-items:center; justify-content:center;
+        position:absolute; top:8px; right:8px; width:40px; height:40px;
+        border:0; border-radius:50%; background:#f1f4f6;
+        font-size:18px; line-height:1; color:#455a64; cursor:pointer;
       }
-      #panel.hidden { transform:translateX(-105%); }
+      .item { padding:12px 14px; }
+      #panel:not(.hidden) ~ #toggle,
+      #panel:not(.hidden) ~ #legend,
+      #panel:not(.hidden) ~ #backdrop { display:none; }
+
       #toggle {
-        left:14px; top:14px;                 /* всегда слева, панель по умолчанию скрыта */
-        height:42px; padding:0 16px; font-size:15px;
+        left:10px; top:10px;
+        height:44px; padding:0 16px; font-size:15px;
       }
       #toggle .label { display:inline; }      /* на мобильном подпись видна всегда */
-      #panel:not(.hidden) ~ #backdrop { opacity:1; pointer-events:auto; }
-      #legend { bottom:12px; right:10px; font-size:11px; padding:8px 11px; line-height:1.6; }
+
+      /* легенда свёрнута в кнопку справа сверху */
+      #legend {
+        top:10px; right:10px; bottom:auto; padding:0;
+        font-size:12px; line-height:1.7; border-radius:9px;
+      }
+      #legend-toggle {
+        display:flex; align-items:center; gap:6px;
+        height:44px; margin:0; padding:0 14px;
+        font-size:12px; letter-spacing:.03em; color:#37474f;
+        pointer-events:auto; cursor:pointer;
+      }
+      #legend-toggle::after { content:'▾'; font-size:11px; color:#90a4ae; }
+      #legend.open #legend-toggle::after { content:'▴'; }
+      #legend .lg-body { display:none; padding:0 14px 10px; }
+      #legend.open .lg-body { display:block; }
       #legend .sw { width:11px; height:11px; }
+
       #stamp { display:none; }
+
+      /* «Открыть в Картах» съедает низ маленького окошка на сайте */
+      [class*="gotoymaps"] { display:none !important; }
     }
   </style>
 </head>
@@ -108,6 +142,7 @@
   <div id="panel">
     <div id="panel-head">
       <h1>Автовозы в пути</h1>
+      <button id="panel-close" type="button" aria-label="Закрыть список">✕</button>
       <div class="sub" id="count">загрузка…</div>
       <input id="search" type="text" placeholder="Поиск по номеру…" autocomplete="off">
     </div>
@@ -121,11 +156,13 @@
   <div id="stamp">загрузка…</div>
 
   <div id="legend">
-    <b>СОСТОЯНИЕ</b>
-    <div><span class="sw" style="background:#2e9e5b"></span> данные до 2 дней</div>
-    <div><span class="sw" style="background:#e08b1e"></span> 3–4 дня</div>
-    <div><span class="sw" style="background:#222"></span> 5 дней и более</div>
-    <div><span class="sw" style="background:#1565c0"></span> малое перемещение</div>
+    <button id="legend-toggle" type="button">Состояние</button>
+    <div class="lg-body">
+      <div><span class="sw" style="background:#2e9e5b"></span> данные до 2 дней</div>
+      <div><span class="sw" style="background:#e08b1e"></span> 3–4 дня</div>
+      <div><span class="sw" style="background:#222"></span> 5 дней и более</div>
+      <div><span class="sw" style="background:#1565c0"></span> малое перемещение</div>
+    </div>
   </div>
 
   <script src="https://api-maps.yandex.ru/2.1/?apikey=aeb19683-8505-416a-a1c4-090e24030cd0&lang=ru_RU"></script>
@@ -304,8 +341,21 @@
     ymaps.ready(function () {
       map = new ymaps.Map('map', {
         center: [58, 60], zoom: 4,
-        controls: ['zoomControl', 'fullscreenControl', 'typeSelector']
-      }, { suppressMapOpenBlock: true });
+        controls: isMobile ? [] : ['zoomControl', 'fullscreenControl', 'typeSelector']
+      }, {
+        suppressMapOpenBlock: true,
+        // не прятать балун под кнопки «Поиск» и «Состояние» при автопрокрутке
+        balloonAutoPanMargin: isMobile ? [60, 8, 8, 8] : 34
+      });
+      // человек сам тронул карту — больше не подгоняем её при повороте экрана
+      map.events.add(['mousedown', 'multitouchstart', 'wheel'], function () {
+        userMovedMap = true;
+      });
+
+      if (isMobile) {
+        // только компактный масштаб справа, под кнопкой легенды
+        map.controls.add('zoomControl', { size: 'small', position: { right: 10, top: 64 } });
+      }
 
       cluster = new ymaps.Clusterer({
         groupByCoordinates: false,
@@ -321,6 +371,18 @@
       });
       map.geoObjects.add(cluster);
 
+      // Карта на сайте встроена в маленький iframe: карусель с листанием
+      // в него не помещается. На телефоне — компактный список по размеру окна.
+      if (isMobile) {
+        cluster.options.set({
+          clusterBalloonContentLayout: 'cluster#balloonAccordion',
+          // ширина: окно минус поля и колонка с крестиком закрытия (~30 px)
+          clusterBalloonContentLayoutWidth: Math.min(240, window.innerWidth - 84),
+          // высота: хватает на 3–4 строки, не больше чем влезает под кнопками
+          clusterBalloonContentLayoutHeight: Math.max(110, Math.min(180, window.innerHeight - 170))
+        });
+      }
+
       // На мобильном панель стартует свёрнутой
       if (isMobile) document.getElementById('panel').classList.add('hidden');
 
@@ -330,6 +392,10 @@
 
     document.getElementById('toggle').onclick = togglePanel;
     document.getElementById('backdrop').onclick = closePanel;
+    document.getElementById('panel-close').onclick = closePanel;
+    document.getElementById('legend-toggle').onclick = function () {
+      document.getElementById('legend').classList.toggle('open');
+    };
 
     document.getElementById('search').oninput = function () {
       renderList(this.value.trim().toLowerCase());
@@ -359,12 +425,21 @@
         var metaLine = kmText(p.km) + ' до Москвы · ' + etaText(p.eta) +
           (p.leg !== null ? ' · прошёл ' + kmText(p.leg) : '') +
           ' · ' + agoText(p.days) +
-          (p.stuck ? ' · <b style="color:#1565c0">стоит</b>' : '');
+          (p.stuck ? ' · <b style="color:#1565c0">стоит</b>' : '') +
+          (p.relay && p.relay.phase === 'transfer' ? ' · <b style="color:#e08b1e">перегруз</b>' : '');
+
+        // у перегрузочных — вторая машина цепочки мелким серым
+        var relayHint = '';
+        if (p.relay) {
+          relayHint = p.relay.phase === 'after'
+            ? ' <span style="font-weight:400;color:#b0bec5;font-size:11px">← ' + p.relay.first + '</span>'
+            : ' <span style="font-weight:400;color:#b0bec5;font-size:11px">→ ' + p.relay.second + '</span>';
+        }
 
         item.innerHTML =
           '<span class="ico">' + truckSVG(markColor(p), 31, 16) + '</span>' +
           '<span class="txt">' +
-            '<div class="name">' + p.truck + (p.prev ? ' <span style="font-weight:400;color:#b0bec5;font-size:11px">← ' + p.prev + '</span>' : '') + '</div>' +
+            '<div class="name">' + p.label + relayHint + (p.prev ? ' <span style="font-weight:400;color:#b0bec5;font-size:11px">← ' + p.prev + '</span>' : '') + '</div>' +
             '<div class="meta">' + metaLine + '</div>' +
             noteHtml +
           '</span>';
@@ -412,7 +487,24 @@
         ? '<div style="color:#c0392b;margin-top:9px;font-weight:600;font-size:12px">Связь потеряна более 5 дней</div>'
         : '';
 
+      // цепочка перегруза: текущая машина жирным, другая серым
+      var relayBlock = '';
+      if (p.relay) {
+        var plate = function (n, active) {
+          return active ? '<b style="color:#1c2833">' + escapeXml(n) + '</b>'
+                        : '<span style="color:#90a4ae">' + escapeXml(n) + '</span>';
+        };
+        relayBlock =
+          '<div style="margin-bottom:8px;padding:7px 10px;background:#f3f6f9;border-radius:6px;font-size:12px;line-height:1.6">' +
+            '<div style="color:#78909c">Перегруз в Забайкальске</div>' +
+            plate(p.relay.first, p.relay.phase !== 'after') + ' &rarr; ' + plate(p.relay.second, p.relay.phase === 'after') +
+            (p.relay.phase === 'transfer'
+              ? '<div style="color:#e08b1e;font-weight:600">Сейчас на перегрузе</div>' : '') +
+          '</div>';
+      }
+
       return '<div style="font-size:13px;line-height:1.85;min-width:210px">' +
+          relayBlock +
           '<table style="width:100%;border-collapse:collapse">' +
             '<tr><td style="color:#78909c;padding-right:12px">До Москвы</td>' +
                 '<td style="text-align:right;font-weight:600">' + kmText(p.km) + '</td></tr>' +
@@ -428,6 +520,58 @@
         '</div>';
     }
 
+    // ---- Перегруз в Забайкальске ----
+    // Номер вида «Н625ХТ75-М118УК13»: первая машина везёт до Забайкальска,
+    // там перегруз, дальше до Москвы едет вторая. На карте показываем ту,
+    // что везёт сейчас; в Журнале история по-прежнему копится под полным номером.
+    var ZAB = { lat: 49.6406, lon: 117.3260 };
+    var ZAB_RADIUS_KM = 40;
+
+    function distKm(lat1, lon1, lat2, lon2) {
+      var toRad = function (x) { return x * Math.PI / 180; };
+      var dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+      var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return 2 * 6371 * Math.asin(Math.sqrt(a));
+    }
+
+    function relayInfo(truck, lat, lon) {
+      var parts = String(truck).split(/\s*[-–—]\s*/).filter(Boolean);
+      if (parts.length !== 2 || parts[0].length < 5 || parts[1].length < 5) return null;
+      var phase;
+      if (distKm(lat, lon, ZAB.lat, ZAB.lon) <= ZAB_RADIUS_KM) phase = 'transfer';
+      else if (lat < ZAB.lat || lon > ZAB.lon) phase = 'before';   // ещё в Китае
+      else phase = 'after';                                         // уже в России, западнее
+      return {
+        first: parts[0], second: parts[1], phase: phase,
+        current: phase === 'after' ? parts[1] : parts[0]
+      };
+    }
+
+    // Подогнать карту под все автовозы. Сначала пересчитываем размер контейнера:
+    // во встроенном на сайт окошке он часто ещё не окончательный, и без этого
+    // карта открывается масштабом «весь мир».
+    function fitToTrucks() {
+      if (!map || !cluster || !cluster.getGeoObjects().length) return;
+      map.container.fitToViewport();
+      // отступы [сверху, справа, снизу, слева]; на телефоне узкие, сверху — под кнопки
+      map.setBounds(cluster.getBounds(), {
+        checkZoomRange: true,
+        zoomMargin: isMobile ? [64, 16, 24, 16] : 80
+      });
+    }
+
+    // Поворот телефона или догрузка окошка на сайте — подгоняем заново,
+    // но только пока человек сам не двигал карту.
+    var userMovedMap = false, resizeTimer = null;
+    window.addEventListener('resize', function () {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(function () {
+        if (!map) return;
+        if (userMovedMap) map.container.fitToViewport(); else fitToTrucks();
+      }, 250);
+    });
+
     function refresh() {
       fetch(API + '?t=' + Date.now())
         .then(function (r) { return r.json(); })
@@ -435,13 +579,16 @@
           records = data.map(function (p) {
             var ts = new Date(p.ts);
             var days = Math.floor((Date.now() - ts) / 864e5);
+            var relay = relayInfo(p.truck, p.lat, p.lon);
             return {
               truck: p.truck, lat: p.lat, lon: p.lon, ts: ts, days: days,
               km: p.km || 0, eta: (p.eta === 0 ? 0 : (p.eta || 0)),
               note: p.note || '', color: ageColor(days),
               leg: (p.leg === null || p.leg === undefined) ? null : p.leg,
               stuck: !!p.stuck,
-              prev: p.prev || ''
+              prev: p.prev || '',
+              relay: relay,
+              label: relay ? relay.current : p.truck
             };
           });
 
@@ -455,19 +602,20 @@
 
           var placemarks = records.map(function (p) {
             var color = markColor(p);
-            var mk = markerSVG(color, p.truck, !!p.note, p.stuck);
+            var mk = markerSVG(color, p.label, !!p.note, p.stuck);
             var pm = new ymaps.Placemark([p.lat, p.lon], {
-              balloonContentHeader: 'Автовоз ' + p.truck + (p.prev ? ' <span style="font-weight:400;color:#90a4ae;font-size:12px">(ранее ' + p.prev + ')</span>' : ''),
+              balloonContentHeader: 'Автовоз ' + p.label + (p.prev ? ' <span style="font-weight:400;color:#90a4ae;font-size:12px">(ранее ' + p.prev + ')</span>' : ''),
               balloonContentBody: balloonBody(p),
-              hintContent: '<b>' + p.truck + '</b>' + (p.prev ? ' (ранее ' + p.prev + ')' : '') + ' · ' + kmText(p.km) + ' до Москвы' +
-                (p.stuck ? ' · стоит' : ''),
-              clusterCaption: p.truck + ' · ' + kmText(p.km)
+              hintContent: '<b>' + p.label + '</b>' + (p.prev ? ' (ранее ' + p.prev + ')' : '') + ' · ' + kmText(p.km) + ' до Москвы' +
+                (p.stuck ? ' · стоит' : '') +
+                (p.relay && p.relay.phase === 'transfer' ? ' · перегруз' : ''),
+              clusterCaption: p.label + ' · ' + kmText(p.km)
             }, {
               iconLayout: 'default#image',
               iconImageHref: mk.href,
               iconImageSize: mk.size,
               iconImageOffset: mk.offset,
-              balloonMaxWidth: 290,
+              balloonMaxWidth: isMobile ? Math.min(260, window.innerWidth - 50) : 290,
               hideIconOnBalloonOpen: false
             });
             marksByTruck[p.truck] = pm;
@@ -476,9 +624,7 @@
 
           cluster.add(placemarks);
 
-          if (placemarks.length) {
-            map.setBounds(cluster.getBounds(), { checkZoomRange: true, zoomMargin: 80 });
-          }
+          if (placemarks.length) fitToTrucks();
 
           var lostCount = records.filter(function (p) { return p.days >= 5; }).length;
           var stuckCount = records.filter(function (p) { return p.stuck; }).length;
