@@ -548,7 +548,7 @@ function dayKey(ms) { const d = new Date(ms); const mm=('0'+(d.getMonth()+1)).sl
 function styleHeader(sh, cols) {
   sh.getRange(1,1,1,cols).setBackground(CLR.headBg).setFontColor(CLR.headText)
     .setFontWeight('bold').setFontSize(11).setVerticalAlignment('middle').setHorizontalAlignment('center');
-  sh.setRowHeight(1, 34); sh.setFrozenRows(1);
+  sh.setRowHeight(1, 34); freezeRows(sh,1);
 }
 
 function autoFitAll(sh, cols) {
@@ -662,7 +662,7 @@ function rebuildExport() {
   sh.getRange(1,1,1,13).setValues([['lat','lon','Автовоз','Дата','До МСК','ETA','Коммент','Прошёл','Стоит','Прежний',
                                      'Срок от','Срок до','Трек']])
     .setBackground(CLR.gray).setFontColor(CLR.grayT).setFontWeight('bold').setFontSize(9);
-  sh.setFrozenRows(1);
+  freezeRows(sh,1);
   if (out.length) sh.getRange(2,1,out.length,13).setValues(out);
   sh.getRange(1,1,Math.max(out.length+1,1),12).setHorizontalAlignment('center');
   autoFitAll(sh, 12);
@@ -735,7 +735,7 @@ function rebuildDashboard() {
   sh.getRange(2,1,1,8).setValues([['Автовоз','Обновлено','Дней назад','Прошёл, км','До Москвы, км','Прибытие, дней','Партия','Статус']])
     .setBackground('#2e5a80').setFontColor('#ffffff').setFontWeight('bold').setFontSize(11)
     .setHorizontalAlignment('center').setVerticalAlignment('middle');
-  sh.setRowHeight(2, 30); sh.setFrozenRows(2);
+  sh.setRowHeight(2, 30); freezeRows(sh,2);
   if (rows.length) {
     sh.getRange(3,7,rows.length,1).setNumberFormat('@');   // партия как текст
     sh.getRange(3,6,rows.length,1).setNumberFormat('@');   // срок «5–6» как текст, не дата
@@ -791,21 +791,64 @@ function getToPlaceMap() {
   return map;
 }
 
+// Сколько дней назад по дате отправки брать сделки для списка «в пути».
+// Текущие партии всех автовозов укладываются в 45 дней (проверено 12.09.2026
+// на всей воронке: 45/60/90/120 дней дают тот же список, что и полная выгрузка),
+// 120 — с запасом. Было 145 страниц по 50 сделок, стало ~31: запуск в разы короче.
+const B24_SYNC_DAYS = 120;
+
+// Закрепить строки, только если ещё не закреплены. Google иногда отказывает
+// в этой косметической операции («You do not have permission to access the
+// requested document») — из-за неё падал весь dailyRefresh. Теперь не падает.
+function freezeRows(sheet, n) {
+  try {
+    if (sheet.getFrozenRows() !== n) sheet.setFrozenRows(n);
+  } catch (e) {
+    Logger.log('Не удалось закрепить строки на листе «' + sheet.getName() + '»: ' + e);
+  }
+}
+
+// Запрос к Битриксу с повтором при временных сбоях (не JSON, 5xx, лимит запросов).
+function b24Post(method, payload) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = UrlFetchApp.fetch(b24() + method, {
+        method: 'post', contentType: 'application/json',
+        payload: JSON.stringify(payload), muteHttpExceptions: true
+      });
+      const data = JSON.parse(res.getContentText());
+      if (data.error === 'QUERY_LIMIT_EXCEEDED') throw new Error('Битрикс: лимит запросов');
+      if (data.error) throw new Error(data.error_description || data.error);   // настоящая ошибка — не повторяем
+      return data;
+    } catch (e) {
+      lastErr = e;
+      if (/Битрикс: лимит|JSON|Unexpected token|Address unavailable|timed out|DNS|50\d/.test(String(e))) {
+        Utilities.sleep(2000 * attempt);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 function syncTrucksFromB24() {
   const toMap = getToPlaceMap();
   const earlySet = {}; B24_STAGES.forEach(x => earlySet[x] = true);
 
-  // Собираем ВСЕ сделки воронки: по автовозу копим машины с датой отправки и стадией
+  // Сделки воронки с отправкой за последние B24_SYNC_DAYS дней: по автовозу копим
+  // машины с датой отправки и стадией. Старые партии всё равно отсекаются ниже.
+  const since = Utilities.formatDate(new Date(Date.now() - B24_SYNC_DAYS * 864e5), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const filter = { CATEGORY_ID: B24_CATEGORY };
+  filter['>=' + B24_SHIP_DATE] = since;
   const deals = {};   // номер → [ { shipMs, stage, toPlace } ]
   let start = 0;
   while (true) {
-    const res = UrlFetchApp.fetch(b24() + 'crm.deal.list.json', {
-      method:'post', contentType:'application/json',
-      payload: JSON.stringify({ filter:{ CATEGORY_ID:B24_CATEGORY },
-        select:[B24_TRUCK,B24_TO_PLACE,'STAGE_ID',B24_SHIP_DATE,B24_ARRIVED], start:start }), muteHttpExceptions:true
+    const data = b24Post('crm.deal.list.json', {
+      filter: filter,
+      select: [B24_TRUCK, B24_TO_PLACE, 'STAGE_ID', B24_SHIP_DATE, B24_ARRIVED], start: start
     });
-    const data = JSON.parse(res.getContentText());
-    if (data.error) throw new Error(data.error_description || data.error);
     (data.result || []).forEach(deal => {
       const num = deal[B24_TRUCK];
       if (isEmpty(num)) return;
@@ -878,7 +921,7 @@ function syncTrucksFromB24() {
     .setBackground(CLR.headBg).setFontColor(CLR.headText).setFontWeight('bold').setFontSize(11)
     .setHorizontalAlignment('center').setVerticalAlignment('middle');
   sh.setRowHeight(2, 30);
-  sh.setFrozenRows(2);
+  freezeRows(sh,2);
 
   if (list.length) {
     const values = list.map(t => {
@@ -914,10 +957,14 @@ function styleAllSheets() {
   SpreadsheetApp.getActive().toast('Оформление применено', 'Готово', 3);
 }
 
+// Если синхронизация с Битриксом упала, карта и Панель всё равно пересобираются
+// по текущему списку автовозов; ошибка пробрасывается в конце — видна в журнале.
 function dailyRefresh() {
-  syncTrucksFromB24();
+  let syncErr = null;
+  try { syncTrucksFromB24(); } catch (e) { syncErr = e; Logger.log('syncTrucksFromB24: ' + e); }
   rebuildExport();
   rebuildDashboard();
+  if (syncErr) throw syncErr;
 }
 
 function doGet() {
