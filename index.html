@@ -315,9 +315,14 @@
       return 'дней';
     }
 
-    function etaText(eta) {
-      if (eta === 0) return 'прибыл';
-      return '~' + eta + ' ' + daysWord(eta);
+    // Срок: коридор «5–6 дней» по истории рейсов, если скрипт его отдал;
+    // иначе старое одно число (совместимость со старой версией скрипта).
+    function etaText(p) {
+      var lo = p.etaLo, hi = p.etaHi;
+      if (hi === null || hi === undefined) { lo = hi = p.eta; }
+      if (!hi) return 'прибыл';
+      if (lo && lo !== hi) return lo + '–' + hi + ' ' + daysWord(hi);
+      return '~' + hi + ' ' + daysWord(hi);
     }
 
     function kmText(km) {
@@ -371,6 +376,19 @@
       });
       map.geoObjects.add(cluster);
 
+      // трек и в балуне кластера: следим, какой автовоз в нём выбран
+      cluster.events.add('balloonopen', function (e) {
+        var c = e.get('cluster') || e.get('target');
+        if (!c || !c.state || !c.state.events) return;
+        var follow = function () {
+          var o = c.state.get('activeObject');
+          if (o && o.properties) showTrack(recordByTruck(o.properties.get('truckKey')));
+        };
+        follow();
+        c.state.events.add('change', follow);
+      });
+      cluster.events.add('balloonclose', hideTrack);
+
       // Карта на сайте встроена в маленький iframe: карусель с листанием
       // в него не помещается. На телефоне — компактный список по размеру окна.
       if (isMobile) {
@@ -422,7 +440,7 @@
           ? '<div class="note" title="' + escapeXml(p.note) + '">' + escapeXml(p.note) + '</div>'
           : '';
 
-        var metaLine = kmText(p.km) + ' до Москвы · ' + etaText(p.eta) +
+        var metaLine = kmText(p.km) + ' до Москвы · ' + etaText(p) +
           (p.leg !== null ? ' · прошёл ' + kmText(p.leg) : '') +
           ' · ' + agoText(p.days) +
           (p.stuck ? ' · <b style="color:#1565c0">стоит</b>' : '') +
@@ -455,7 +473,17 @@
           map.setCenter([p.lat, p.lon], 9, { duration: 500 });
           setTimeout(function () {
             var pm = marksByTruck[p.truck];
-            if (pm) pm.balloon.open();
+            if (!pm) return;
+            // автовоз внутри кластера (например, несколько в Забайкальске) —
+            // открываем балун кластера сразу на нём
+            var st = cluster.getObjectState(pm);
+            if (st && st.isClustered && st.cluster) {
+              st.cluster.state.set('activeObject', pm);
+              cluster.balloon.open(st.cluster);
+            } else {
+              pm.balloon.open();
+            }
+            showTrack(p);
           }, isMobile ? 620 : 560);
         };
 
@@ -509,7 +537,7 @@
             '<tr><td style="color:#78909c;padding-right:12px">До Москвы</td>' +
                 '<td style="text-align:right;font-weight:600">' + kmText(p.km) + '</td></tr>' +
             '<tr><td style="color:#78909c">Прибытие</td>' +
-                '<td style="text-align:right;font-weight:600">' + etaText(p.eta) + '</td></tr>' +
+                '<td style="text-align:right;font-weight:600">' + etaText(p) + '</td></tr>' +
             legRow +
             '<tr><td style="color:#78909c">Обновлено</td>' +
                 '<td style="text-align:right">' + p.ts.toLocaleDateString('ru-RU') + '</td></tr>' +
@@ -548,6 +576,46 @@
       };
     }
 
+    // ---- Пройденный путь выбранного автовоза ----
+    // Линия по отметкам текущего рейса (прямые между отметками, не по дорогам).
+    // Показывается только у выбранного, чтобы карта не превращалась в клубок.
+    var trackLayer = null;
+
+    function recordByTruck(truck) {
+      for (var i = 0; i < records.length; i++) if (records[i].truck === truck) return records[i];
+      return null;
+    }
+
+    function hideTrack() {
+      if (trackLayer) { map.geoObjects.remove(trackLayer); trackLayer = null; }
+    }
+
+    function trackDot(color) {
+      return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">' +
+        '<circle cx="6" cy="6" r="4.2" fill="#fff" stroke="' + color + '" stroke-width="2.2"/></svg>');
+    }
+
+    function showTrack(p) {
+      hideTrack();
+      if (!p || !p.track || p.track.length < 2) return;
+      var color = markColor(p);
+      var coords = p.track.map(function (pt) { return [pt[0], pt[1]]; });
+      trackLayer = new ymaps.GeoObjectCollection();
+      // белая подложка + цветная линия — видно и на светлой, и на тёмной карте
+      trackLayer.add(new ymaps.Polyline(coords, {}, { strokeColor: '#ffffff', strokeWidth: 7, strokeOpacity: 0.9 }));
+      trackLayer.add(new ymaps.Polyline(coords, {}, { strokeColor: color, strokeWidth: 3.5, strokeOpacity: 0.95 }));
+      p.track.slice(0, -1).forEach(function (pt) {
+        trackLayer.add(new ymaps.Placemark([pt[0], pt[1]], {
+          hintContent: new Date(pt[2]).toLocaleDateString('ru-RU')
+        }, {
+          iconLayout: 'default#image', iconImageHref: trackDot(color),
+          iconImageSize: [12, 12], iconImageOffset: [-6, -6], zIndex: 1
+        }));
+      });
+      map.geoObjects.add(trackLayer);
+    }
+
     // Подогнать карту под все автовозы. Сначала пересчитываем размер контейнера:
     // во встроенном на сайт окошке он часто ещё не окончательный, и без этого
     // карта открывается масштабом «весь мир».
@@ -583,6 +651,9 @@
             return {
               truck: p.truck, lat: p.lat, lon: p.lon, ts: ts, days: days,
               km: p.km || 0, eta: (p.eta === 0 ? 0 : (p.eta || 0)),
+              etaLo: (p.etaLo === undefined ? null : p.etaLo),
+              etaHi: (p.etaHi === undefined ? null : p.etaHi),
+              track: Array.isArray(p.track) ? p.track : [],
               note: p.note || '', color: ageColor(days),
               leg: (p.leg === null || p.leg === undefined) ? null : p.leg,
               stuck: !!p.stuck,
@@ -597,6 +668,7 @@
             return a.km - b.km;
           });
 
+          hideTrack();
           cluster.removeAll();
           marksByTruck = {};
 
@@ -604,6 +676,7 @@
             var color = markColor(p);
             var mk = markerSVG(color, p.label, !!p.note, p.stuck);
             var pm = new ymaps.Placemark([p.lat, p.lon], {
+              truckKey: p.truck,
               balloonContentHeader: 'Автовоз ' + p.label + (p.prev ? ' <span style="font-weight:400;color:#90a4ae;font-size:12px">(ранее ' + p.prev + ')</span>' : ''),
               balloonContentBody: balloonBody(p),
               hintContent: '<b>' + p.label + '</b>' + (p.prev ? ' (ранее ' + p.prev + ')' : '') + ' · ' + kmText(p.km) + ' до Москвы' +
@@ -619,6 +692,8 @@
               hideIconOnBalloonOpen: false
             });
             marksByTruck[p.truck] = pm;
+            pm.events.add('balloonopen', function () { showTrack(p); });
+            pm.events.add('balloonclose', hideTrack);
             return pm;
           });
 

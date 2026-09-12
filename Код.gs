@@ -70,6 +70,9 @@ function onOpen() {
     .addSeparator()
     .addItem('Вебхук Битрикса', 'setB24Webhook')
     .addItem('Проверить связь с Битриксом', 'checkB24')
+    .addSeparator()
+    .addItem('Пересчитать сроки по истории', 'retrainEta')
+    .addItem('Включить еженедельный пересчёт сроков', 'enableWeeklyEta')
     .addToUi();
 }
 
@@ -354,6 +357,187 @@ function haversine(lat1, lon1, lat2, lon2) {
 }
 function distanceToMoscow(lat, lon) { return Math.round(haversine(lat, lon, MSK.lat, MSK.lon) * ROAD_FACTOR); }
 function etaDays(km) { if (km < 30) return 0; return Math.max(1, Math.ceil(km / (AVG_SPEED_KMH * HOURS_PER_DAY))); }
+
+// ================== СРОКИ ПО ИСТОРИИ ==================
+// Коридор «обычно … до»: сколько дней реально оставалось до СВХ с похожего
+// расстояния — медиана и 80% по прошлым рейсам. Учится на Журнале и датах
+// прибытия на СВХ из Битрикса, хранится в свойствах скрипта (ETA_MODEL),
+// пересчитывается раз в неделю (retrainEta). Забайкальск — отдельно:
+// там весь разброс — ожидание на границе.
+const ETA_PROP = 'ETA_MODEL';
+const ZAB = { lat: 49.6406, lon: 117.3260 };
+const ZAB_RADIUS_KM = 40;
+const ETA_KNOTS = [500, 1500, 2500, 3500, 4500, 5500, 6400];
+const ETA_WINDOW_KM = 700;       // окно вокруг узла, чтобы хватало точек
+const ETA_MIN_POINTS = 80;       // меньше — таблицу не трогаем
+// стартовая таблица: 12.09.2026, 256 отметок за июль–сентябрь; [км, обычно, 80% за]
+const ETA_SEED = {
+  knots: [[500,1.4,2.3],[1500,1.8,2.5],[2500,2.9,3.7],[3500,4.6,5.6],[4500,5.6,6.6],[5500,8.4,9.4],[6400,9.3,9.7]],
+  zab: [11.1, 14.4], n: 256, updated: '2026-09-12'
+};
+let ETA_CACHE = null;
+
+function etaModel() {
+  if (ETA_CACHE) return ETA_CACHE;
+  const raw = PropertiesService.getScriptProperties().getProperty(ETA_PROP);
+  if (raw) {
+    try { const m = JSON.parse(raw); if (m && m.knots && m.knots.length) return (ETA_CACHE = m); } catch (e) {}
+  }
+  return (ETA_CACHE = ETA_SEED);
+}
+
+function isAtZab(lat, lon) { return haversine(lat, lon, ZAB.lat, ZAB.lon) <= ZAB_RADIUS_KM; }
+
+// { lo, hi } в целых днях; 0/0 — уже в Москве
+function etaRange(km, lat, lon, model) {
+  if (km < 30) return { lo: 0, hi: 0 };
+  const m = model || etaModel();
+  let lo, hi;
+  if (m.zab && lat !== undefined && isAtZab(lat, lon)) { lo = m.zab[0]; hi = m.zab[1]; }
+  else {
+    const t = m.knots;
+    if (km <= t[0][0]) { const k = km / t[0][0]; lo = t[0][1] * k; hi = t[0][2] * k; }
+    else if (km >= t[t.length - 1][0]) { lo = t[t.length - 1][1]; hi = t[t.length - 1][2]; }
+    else for (let i = 1; i < t.length; i++) {
+      if (km <= t[i][0]) {
+        const f = (km - t[i - 1][0]) / (t[i][0] - t[i - 1][0]);
+        lo = t[i - 1][1] + (t[i][1] - t[i - 1][1]) * f;
+        hi = t[i - 1][2] + (t[i][2] - t[i - 1][2]) * f;
+        break;
+      }
+    }
+  }
+  const L = Math.max(1, Math.round(lo)), H = Math.max(L, Math.ceil(hi));
+  return { lo: L, hi: H };
+}
+
+function etaRangeText(r) { return r.hi === 0 ? 'прибыл' : (r.lo === r.hi ? String(r.hi) : r.lo + '–' + r.hi); }
+
+function normKey(s) { return String(s).replace(/[\s\-–—]/g, '').toUpperCase(); }
+
+// Чистая функция (без обращений к Google) — её же гоняем в Node для проверки.
+// points: [{ t: мс, keys: [...], km, zab }], svh: { КЛЮЧ: [мс, ...] }
+function fitEtaModel(points, svh) {
+  const DAY = 864e5, lab = [];
+  points.forEach(p => {
+    if (p.km < 150) return;                                   // уже в Москве
+    let best = null;
+    p.keys.forEach(k => (svh[k] || []).forEach(d => {
+      if (d >= p.t - DAY && d <= p.t + 40 * DAY && (best === null || d < best)) best = d;
+    }));
+    if (best !== null) lab.push({ km: p.km, zab: p.zab, left: Math.max(0, (best - p.t) / DAY) });
+  });
+  const q = (v, x) => {
+    v = v.slice().sort((a, b) => a - b);
+    const i = (v.length - 1) * x, lo = Math.floor(i), hi = Math.ceil(i);
+    return v[lo] + (v[hi] - v[lo]) * (i - lo);
+  };
+  const road = lab.filter(r => !r.zab), knots = [];
+  ETA_KNOTS.forEach(c => {
+    const w = road.filter(r => Math.abs(r.km - c) <= ETA_WINDOW_KM).map(r => r.left);
+    if (w.length >= 6) knots.push([c, q(w, .5), q(w, .8)]);
+  });
+  for (let i = 1; i < knots.length; i++) {                    // дальше — не быстрее
+    knots[i][1] = Math.max(knots[i][1], knots[i - 1][1]);
+    knots[i][2] = Math.max(knots[i][2], knots[i - 1][2]);
+  }
+  const z = lab.filter(r => r.zab).map(r => r.left);
+  const r1 = v => Math.round(v * 10) / 10;
+  return {
+    knots: knots.map(k => [k[0], r1(k[1]), r1(k[2])]),
+    zab: z.length >= 6 ? [r1(q(z, .5)), r1(q(z, .8))] : null,
+    n: lab.length
+  };
+}
+
+function sheetDateMs(v) {
+  if (v instanceof Date) return v.getTime();
+  const m = String(v || '').match(/(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (m) return new Date(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0)).getTime();
+  const t = new Date(v).getTime();
+  return isNaN(t) ? NaN : t;
+}
+
+// Только место ТО «Чита-Москва»: у просто «Читы» СВХ в Чите, это ~3 дня,
+// а не ~11 до Москвы — такие сделки занизили бы сроки.
+const ETA_TO_PLACE = 'Чита-Москва';
+
+// даты прибытия на СВХ по номеру автовоза за последние полгода (только ETA_TO_PLACE)
+function fetchSvhDatesByTruck() {
+  const toMap = getToPlaceMap();                              // ID → название места ТО
+  const placeIds = Object.keys(toMap).filter(id => toMap[id] === ETA_TO_PLACE);
+  if (!placeIds.length) throw new Error('В справочнике мест ТО нет «' + ETA_TO_PLACE + '»');
+  const since = Utilities.formatDate(new Date(Date.now() - 180 * 864e5), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const out = {};
+  let start = 0;
+  while (true) {
+    const filter = { CATEGORY_ID: B24_CATEGORY };
+    filter['>=' + B24_ARRIVED] = since;
+    const res = UrlFetchApp.fetch(b24() + 'crm.deal.list.json', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      payload: JSON.stringify({ filter: filter, select: ['ID', B24_TRUCK, B24_ARRIVED, B24_TO_PLACE], start: start })
+    });
+    const d = JSON.parse(res.getContentText());
+    if (d.error) throw new Error(d.error_description || d.error);
+    (d.result || []).forEach(deal => {
+      if (isEmpty(deal[B24_ARRIVED])) return;
+      const tp = deal[B24_TO_PLACE];
+      const code = String(Array.isArray(tp) ? tp[0] : tp).trim();
+      if (placeIds.indexOf(code) === -1) return;
+      // Дата СВХ приходит с временем прибытия («2026-07-20T04:22:00+03:00»).
+      // Берём дату и время «как на часах», без пересчёта поясов — так же сравниваются
+      // отметки Журнала. Так посчитана и стартовая таблица ETA_SEED.
+      const dt = String(deal[B24_ARRIVED]).match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
+      if (!dt) return;
+      const ms = new Date(+dt[1], +dt[2] - 1, +dt[3], +(dt[4] || 0), +(dt[5] || 0)).getTime();
+      const nums = deal[B24_TRUCK];
+      (Array.isArray(nums) ? nums : [nums]).forEach(n => {
+        if (isEmpty(n)) return;
+        const k = normKey(n);
+        (out[k] = out[k] || []).push(ms);
+      });
+    });
+    if (d.next === undefined) break;
+    start = d.next; Utilities.sleep(300);
+  }
+  return out;
+}
+
+// Меню и недельный триггер: пересчитать таблицу сроков по свежей истории
+function retrainEta() {
+  const points = [];
+  SpreadsheetApp.getActive().getSheetByName('Журнал').getDataRange().getValues().slice(1).forEach(r => {
+    const t = sheetDateMs(r[0]), lat = toNum(r[3]), lon = toNum(r[4]);
+    if (!r[1] || isNaN(t) || isNaN(lat) || isNaN(lon)) return;
+    const name = String(r[1]).trim();
+    const keys = [normKey(name)].concat(
+      name.split(/\s*[-–—]\s*/).filter(s => s.trim().length >= 5).map(normKey));
+    points.push({ t: t, keys: keys, km: distanceToMoscow(lat, lon), zab: isAtZab(lat, lon) });
+  });
+  const m = fitEtaModel(points, fetchSvhDatesByTruck());
+  const ok = m.n >= ETA_MIN_POINTS && m.knots.length >= 4;
+  if (ok) {
+    m.updated = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    PropertiesService.getScriptProperties().setProperty(ETA_PROP, JSON.stringify(m));
+    ETA_CACHE = m;
+    rebuildExport(); rebuildDashboard();
+  }
+  Logger.log((ok ? 'Сроки обновлены: ' : 'Мало данных, таблица не тронута: ') + JSON.stringify(m));
+  try {
+    SpreadsheetApp.getActive().toast(ok
+      ? 'Сроки пересчитаны по ' + m.n + ' отметкам'
+      : 'Мало данных (' + m.n + ' отметок) — оставлена прежняя таблица сроков', 'Сроки', 6);
+  } catch (e) { /* запуск по триггеру — тоста нет */ }
+  return m;
+}
+
+function enableWeeklyEta() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === 'retrainEta')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('retrainEta').timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(6).create();
+  SpreadsheetApp.getActive().toast('Сроки будут пересчитываться каждый понедельник около 6 утра', 'Готово', 5);
+}
 function toNum(v) {
   if (typeof v === 'number') return v;
   if (v === null || v === undefined) return NaN;
@@ -409,7 +593,17 @@ function getHistoryByTruck() {
       const daysGap = Math.max((last.t - prev.t) / 864e5, 1);
       if (legKm / daysGap < MIN_KM_PER_DAY) stuck = true;
     }
-    result[k] = { last, note:last.note, prev:last.prev, legKm, stuck };
+    // трек текущего рейса: от последней отметки назад, пока нет разрыва больше
+    // 10 дней и пока не упёрлись в Москву перед дальней точкой (конец прошлого рейса)
+    const trip = [last];
+    for (let i = days.length - 2; i >= 0; i--) {
+      const p = days[i];
+      if ((trip[0].t - p.t) / 864e5 > 10) break;
+      if (distanceToMoscow(p.lat, p.lon) < 150 && distanceToMoscow(trip[0].lat, trip[0].lon) >= 150) break;
+      trip.unshift(p);
+    }
+    const track = trip.map(p => [Math.round(p.lat * 1e5) / 1e5, Math.round(p.lon * 1e5) / 1e5, p.t]);
+    result[k] = { last, note:last.note, prev:last.prev, legKm, stuck, track };
   });
   return result;
 }
@@ -458,16 +652,21 @@ function rebuildExport() {
     .sort()
     .map(k => {
       const h = hist[k], r = h.last, km = distanceToMoscow(r.lat, r.lon);
-      return [r.lat, r.lon, k, r.date, km, etaDays(km), r.note, h.legKm===null?'':h.legKm, h.stuck?1:0, h.prev||''];
+      const eta = etaRange(km, r.lat, r.lon);
+      // ETA (кол. 6) — верхняя граница: старая карта продолжает работать как раньше
+      return [r.lat, r.lon, k, r.date, km, eta.hi, r.note, h.legKm===null?'':h.legKm, h.stuck?1:0, h.prev||'',
+              eta.lo, eta.hi, JSON.stringify(h.track || [])];
     });
   const sh = SpreadsheetApp.getActive().getSheetByName('Экспорт');
   sh.clear();
-  sh.getRange(1,1,1,10).setValues([['lat','lon','Автовоз','Дата','До МСК','ETA','Коммент','Прошёл','Стоит','Прежний']])
+  sh.getRange(1,1,1,13).setValues([['lat','lon','Автовоз','Дата','До МСК','ETA','Коммент','Прошёл','Стоит','Прежний',
+                                     'Срок от','Срок до','Трек']])
     .setBackground(CLR.gray).setFontColor(CLR.grayT).setFontWeight('bold').setFontSize(9);
   sh.setFrozenRows(1);
-  if (out.length) sh.getRange(2,1,out.length,10).setValues(out);
-  sh.getRange(1,1,Math.max(out.length+1,1),10).setHorizontalAlignment('center');
-  autoFitAll(sh, 10);
+  if (out.length) sh.getRange(2,1,out.length,13).setValues(out);
+  sh.getRange(1,1,Math.max(out.length+1,1),12).setHorizontalAlignment('center');
+  autoFitAll(sh, 12);
+  sh.setColumnWidth(13, 140);                    // трек — длинный JSON, не растягиваем
 }
 
 function rebuildDashboard() {
@@ -513,7 +712,7 @@ function rebuildDashboard() {
     if (arriving[k]) status = 'ПРИБЫВАЕТ';
     else if (h.stuck) status = 'СТОИТ';
     else status = days<=2?'Свежие':days<=4?'Скоро обновить':'ОБНОВИТЬ';
-    return { truck:k, date:rec.date, days, km, eta:etaDays(km),
+    return { truck:k, date:rec.date, days, km, eta:etaRangeText(etaRange(km, rec.lat, rec.lon)),
       leg:h.legKm===null?'—':h.legKm, stuck:h.stuck, status:status, batch:batchInfo[k] };
   });
 
@@ -539,6 +738,7 @@ function rebuildDashboard() {
   sh.setRowHeight(2, 30); sh.setFrozenRows(2);
   if (rows.length) {
     sh.getRange(3,7,rows.length,1).setNumberFormat('@');   // партия как текст
+    sh.getRange(3,6,rows.length,1).setNumberFormat('@');   // срок «5–6» как текст, не дата
     sh.getRange(3,1,rows.length,8).setValues(rows.map(r => [r.truck,r.date,r.days===9999?'—':r.days,r.leg,r.km,r.eta,r.batch||'',r.status]));
     for (let i = 0; i < rows.length; i++) {
       const range = sh.getRange(i+3,1,1,8), st = sh.getRange(i+3,8,1,1);
@@ -723,9 +923,12 @@ function dailyRefresh() {
 function doGet() {
   const rows = SpreadsheetApp.getActive().getSheetByName('Экспорт').getDataRange().getValues().slice(1)
     .filter(r => !isNaN(toNum(r[0])) && !isNaN(toNum(r[1])));
+  const num = v => (v === '' || v === undefined || v === null || isNaN(toNum(v))) ? null : toNum(v);
+  const trackOf = v => { try { const a = JSON.parse(v); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
   const data = rows.map(r => ({
     lat:toNum(r[0]), lon:toNum(r[1]), truck:String(r[2]), ts:new Date(r[3]).toISOString(),
-    km:r[4], eta:r[5], note:String(r[6]||''), leg:r[7]===''?null:r[7], stuck:r[8]===1, prev:String(r[9]||'')
+    km:r[4], eta:r[5], note:String(r[6]||''), leg:r[7]===''?null:r[7], stuck:r[8]===1, prev:String(r[9]||''),
+    etaLo:num(r[10]), etaHi:num(r[11]), track:trackOf(r[12])
   }));
   return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 }
