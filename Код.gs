@@ -49,7 +49,18 @@ const B24_CATEGORY  = 4;
 const B24_TRUCK     = 'UF_CRM_1755854996126';
 const B24_ARRIVED   = 'UF_CRM_1734620131';
 const B24_TO_PLACE  = 'UF_CRM_1722393583543';
-const B24_HIDE_TO   = ['Чита', 'Харгос-Москва'];
+// Места ТО, автовозы с которыми не показываем клиентам. Сравнение — через placeKey():
+// без учёта регистра, пробелов и вида тире. Было «Харгос-Москва» с опечаткой,
+// а в Битриксе «Хоргос-Москва» — и Хоргос не скрывался (исправлено 15.09.2026).
+const B24_HIDE_TO   = ['Чита', 'Хоргос-Москва'];
+
+function placeKey(s) {
+  return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[‐-―−-]/g, '-').replace(/\s+/g, '');
+}
+function isHiddenPlace(place) {
+  const k = placeKey(place);
+  return !!k && B24_HIDE_TO.some(p => placeKey(p) === k);
+}
 const B24_STAGES    = ['C4:UC_P1CA59', 'C4:UC_9HAG50', 'C4:UC_OWAJBE'];  // ранние: Транзит, Брокерский, Предв. пошлина
 const B24_SHIP_DATE = 'UF_CRM_1776043454137';  // дата отправки
 const B24_BATCH_DAYS = 2;   // окно партии, ± дней от самой свежей отправки
@@ -926,7 +937,7 @@ function syncTrucksFromB24() {
   if (list.length) {
     const values = list.map(t => {
       const a = inTransit[t];
-      const hiddenByPlace = B24_HIDE_TO.indexOf(a.toPlace) !== -1;
+      const hiddenByPlace = isHiddenPlace(a.toPlace);
       // "прибывает" — тоже скрываем с карты, но помечаем статусом
       const hidden = hiddenByPlace || a.arriving;
       const status = a.arriving ? 'Прибывает' : 'В пути';
