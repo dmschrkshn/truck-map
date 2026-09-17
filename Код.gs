@@ -597,13 +597,6 @@ function getHistoryByTruck() {
     const perDay = {}; arr.forEach(p => { perDay[dayKey(p.t)] = p; });
     const days = Object.keys(perDay).sort().map(d => perDay[d]);
     const last = days[days.length-1];
-    const prev = days.length >= 2 ? days[days.length-2] : null;
-    let legKm = null, stuck = false;
-    if (prev) {
-      legKm = Math.round(haversine(prev.lat,prev.lon,last.lat,last.lon) * ROAD_FACTOR);
-      const daysGap = Math.max((last.t - prev.t) / 864e5, 1);
-      if (legKm / daysGap < MIN_KM_PER_DAY) stuck = true;
-    }
     // трек текущего рейса: от последней отметки назад, пока нет разрыва больше
     // 10 дней и пока не упёрлись в Москву перед дальней точкой (конец прошлого рейса)
     const trip = [last];
@@ -612,6 +605,17 @@ function getHistoryByTruck() {
       if ((trip[0].t - p.t) / 864e5 > 10) break;
       if (distanceToMoscow(p.lat, p.lon) < 150 && distanceToMoscow(trip[0].lat, trip[0].lon) >= 150) break;
       trip.unshift(p);
+    }
+    // «Стоит» и «прошёл с прошлого раза» — только внутри текущего рейса. Раньше
+    // сравнивали с любой прошлой отметкой, и автовоз, только что вышедший в новый
+    // рейс, получал «СТОИТ, прошёл 3140 км» — прошлая точка была из Москвы месяц
+    // назад (17.09.2026, 吉ARM361).
+    const prev = trip.length >= 2 ? trip[trip.length-2] : null;
+    let legKm = null, stuck = false;
+    if (prev) {
+      legKm = Math.round(haversine(prev.lat,prev.lon,last.lat,last.lon) * ROAD_FACTOR);
+      const daysGap = Math.max((last.t - prev.t) / 864e5, 1);
+      if (legKm / daysGap < MIN_KM_PER_DAY) stuck = true;
     }
     const track = trip.map(p => [Math.round(p.lat * 1e5) / 1e5, Math.round(p.lon * 1e5) / 1e5, p.t]);
     result[k] = { last, note:last.note, prev:last.prev, legKm, stuck, track };
