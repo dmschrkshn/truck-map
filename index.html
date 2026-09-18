@@ -577,17 +577,63 @@
     }
 
     // ---- Пройденный путь выбранного автовоза ----
-    // Линия по отметкам текущего рейса (прямые между отметками, не по дорогам).
+    // Линия идёт ПО ДОРОГАМ: отметки «примагничиваются» к заранее построенному
+    // коридору (corridors.json — маршруты Забайкальск→Москва и Уссурийск→Москва,
+    // посчитаны один раз, на клиенте ничего не маршрутизируется). Если отметка
+    // дальше SNAP_KM от обоих коридоров (например, в Китае) — участок остаётся прямым.
     // Показывается только у выбранного, чтобы карта не превращалась в клубок.
-    var trackLayer = null;
+    var trackLayer = null, corridors = null, corridorsPromise = null, trackToken = 0;
+    var SNAP_KM = 70;
+
+    function loadCorridors() {
+      if (corridors) return Promise.resolve(corridors);
+      if (!corridorsPromise) {
+        corridorsPromise = fetch('corridors.json')
+          .then(function (r) { return r.json(); })
+          .then(function (j) { corridors = [j.zab, j.uss].filter(Boolean); return corridors; })
+          .catch(function () { corridors = []; return corridors; });   // нет файла — останутся прямые
+      }
+      return corridorsPromise;
+    }
+
+    function nearestOnCorridor(c, pt) {
+      var best = { idx: -1, km: Infinity };
+      for (var i = 0; i < c.line.length; i++) {
+        var d = distKm(pt[0], pt[1], c.line[i][0], c.line[i][1]);
+        if (d < best.km) { best.idx = i; best.km = d; }
+      }
+      return best;
+    }
+
+    // Путь между двумя отметками: кусок коридора, если обе рядом с одним и тем же,
+    // иначе прямая. Концы притягиваем к самим отметкам, чтобы линия дошла до метки.
+    function pathBetween(a, b) {
+      var best = null;
+      (corridors || []).forEach(function (c) {
+        var na = nearestOnCorridor(c, a), nb = nearestOnCorridor(c, b);
+        if (na.km <= SNAP_KM && nb.km <= SNAP_KM && (!best || na.km + nb.km < best.score)) {
+          best = { c: c, from: na.idx, to: nb.idx, score: na.km + nb.km };
+        }
+      });
+      if (!best) return [a, b];
+      var lo = Math.min(best.from, best.to), hi = Math.max(best.from, best.to);
+      var seg = best.c.line.slice(lo, hi + 1);
+      if (best.from > best.to) seg.reverse();
+      return [a].concat(seg, [b]);
+    }
 
     function recordByTruck(truck) {
       for (var i = 0; i < records.length; i++) if (records[i].truck === truck) return records[i];
       return null;
     }
 
-    function hideTrack() {
+    function removeTrackLayer() {
       if (trackLayer) { map.geoObjects.remove(trackLayer); trackLayer = null; }
+    }
+
+    function hideTrack() {
+      trackToken++;                    // отменяет отрисовку, которая ещё грузила коридоры
+      removeTrackLayer();
     }
 
     function trackDot(color) {
@@ -596,15 +642,14 @@
         '<circle cx="6" cy="6" r="4.2" fill="#fff" stroke="' + color + '" stroke-width="2.2"/></svg>');
     }
 
-    function showTrack(p) {
-      hideTrack();
-      if (!p || !p.track || p.track.length < 2) return;
+    function drawTrack(p, coords) {
+      removeTrackLayer();              // без отмены: прямая линия сменяется дорожной
       var color = markColor(p);
-      var coords = p.track.map(function (pt) { return [pt[0], pt[1]]; });
       trackLayer = new ymaps.GeoObjectCollection();
       // белая подложка + цветная линия — видно и на светлой, и на тёмной карте
       trackLayer.add(new ymaps.Polyline(coords, {}, { strokeColor: '#ffffff', strokeWidth: 7, strokeOpacity: 0.9 }));
       trackLayer.add(new ymaps.Polyline(coords, {}, { strokeColor: color, strokeWidth: 3.5, strokeOpacity: 0.95 }));
+      // точки — сами отметки из Журнала, с датой в подсказке
       p.track.slice(0, -1).forEach(function (pt) {
         trackLayer.add(new ymaps.Placemark([pt[0], pt[1]], {
           hintContent: new Date(pt[2]).toLocaleDateString('ru-RU')
@@ -614,6 +659,28 @@
         }));
       });
       map.geoObjects.add(trackLayer);
+    }
+
+    // Линия по дорогам: участок за участком между соседними отметками
+    function roadPath(p) {
+      var out = [];
+      for (var i = 1; i < p.track.length; i++) {
+        var seg = pathBetween([p.track[i - 1][0], p.track[i - 1][1]], [p.track[i][0], p.track[i][1]]);
+        out = out.concat(i === 1 ? seg : seg.slice(1));
+      }
+      return out;
+    }
+
+    function showTrack(p) {
+      hideTrack();
+      if (!p || !p.track || p.track.length < 2) return;
+      var token = ++trackToken;
+      // сразу прямая — чтобы линия появилась без задержки
+      drawTrack(p, p.track.map(function (pt) { return [pt[0], pt[1]]; }));
+      loadCorridors().then(function () {
+        if (token !== trackToken || !corridors.length) return;   // выбрали другой автовоз
+        drawTrack(p, roadPath(p));
+      });
     }
 
     // Подогнать карту под все автовозы. Сначала пересчитываем размер контейнера:
